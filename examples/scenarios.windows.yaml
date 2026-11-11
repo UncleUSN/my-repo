@@ -1,0 +1,37 @@
+# Сценарии узла Windows. Файл лежит рядом с ferry.yaml.
+# Один файл из outbox уходит в две папки WSL (alias inbox и alias archive).
+# Пост-действие (перенос в sent) выполняется, только когда ответили оба назначения.
+scenarios:
+  - name: watch-to-wsl
+    watch: true
+    settle: 2s
+    interval: 2s
+    sources:
+      - path: "C:\\ferry\\outbox"
+        include: ["*"]
+        exclude: ["*.tmp", "*.partial"]
+        recursive: false
+    destinations:
+      - peer: wsl
+        alias: inbox
+      - peer: wsl
+        alias: archive
+    on_success: move
+    success_policy: all
+    archive_dir: "C:\\ferry\\sent"
+    retry:
+      max_attempts: 5
+      initial_backoff: 2s
+      max_backoff: 1m
+
+  # Расписание и наблюдение можно включить вместе.
+  # - name: nightly-reports
+  #   schedule: "15 2 * * *"
+  #   sources:
+  #     - path: "C:\\ferry\\reports"
+  #       include: ["*.csv"]
+  #   destinations:
+  #     - peer: wsl
+  #       alias: inbox
+  #       path: reports
+  #   on_success: keep

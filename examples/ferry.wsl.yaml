@@ -1,0 +1,34 @@
+# Агент в WSL. Порт 7421, чтобы не столкнуться с агентом Windows на 7420.
+# WIN_HOST задаёт examples/start-wsl.sh — это IP Windows со стороны WSL.
+node:
+  id: wsl
+  listen: "0.0.0.0:7421"
+  token: "change-me-to-a-long-random-token"
+  data_dir: "${HOME}/ferry/data"
+  log_level: info
+  scenarios: "scenarios.wsl.yaml"
+  allowed_roots:
+    - "${HOME}/ferry"
+  inbound:
+    - name: inbox
+      path: "${HOME}/ferry/inbox"
+    - name: archive
+      path: "${HOME}/ferry/archive"
+  tls:
+    cert_file: "${HOME}/ferry/certs/cert.pem"
+    key_file: "${HOME}/ferry/certs/key.pem"
+
+monitoring:
+  delivery_timeout: 15m
+  alerts_log:
+    path: "${HOME}/ferry/data/alerts.log"
+    min_level: info
+    max_size_mb: 10
+    max_backups: 5
+    max_age_days: 14
+
+peers:
+  - id: win
+    url: "https://${WIN_HOST}:7420"
+    token: "change-me-to-a-long-random-token"
+    tls_skip_verify: true

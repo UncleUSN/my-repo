@@ -1,0 +1,11 @@
+# Фрагмент для .gitlab-ci.yml.
+# Раннер должен доставать до агента по HTTPS. Бинарь ferry лежит в репозитории
+# или собирается шагом раньше. Токен узла — маскированная переменная FERRY_TOKEN.
+# В ferry-ci.yaml у peer: token: "${FERRY_TOKEN}" и ca_file с сертификатом сервера.
+
+transfer_artifact:
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - ./ferry send --config ferry-ci.yaml --peer prod --src dist/app.zip --dst /opt/incoming/app.zip

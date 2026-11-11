@@ -1,0 +1,23 @@
+# Сценарии узла WSL. Файл из outbox возвращается на Windows:
+# в именованную папку inbox и во вторую папку archive.
+scenarios:
+  - name: watch-to-win
+    watch: true
+    settle: 2s
+    interval: 2s
+    sources:
+      - path: "${HOME}/ferry/outbox"
+        include: ["*"]
+        exclude: ["*.tmp"]
+    destinations:
+      - peer: win
+        alias: inbox
+      - peer: win
+        path: "C:/ferry/archive/"
+    on_success: move
+    success_policy: all
+    archive_dir: "${HOME}/ferry/sent"
+    retry:
+      max_attempts: 5
+      initial_backoff: 2s
+      max_backoff: 1m

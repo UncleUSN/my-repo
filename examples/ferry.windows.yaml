@@ -1,0 +1,38 @@
+# Агент на Windows. Слушает 7420, чтобы WSL мог к нему подключиться.
+# Токен ниже — заглушка. Один и тот же секрет впишите в оба конфига
+# (или вынесите в token_file / ${FERRY_TOKEN}).
+node:
+  id: win
+  listen: "0.0.0.0:7420"
+  token: "change-me-to-a-long-random-token"
+  data_dir: "C:\\ferry\\data"
+  log_level: info
+  scenarios: "scenarios.windows.yaml"
+  allowed_roots:
+    - "C:\\ferry"
+  inbound:
+    - name: inbox
+      path: "C:\\ferry\\inbox"
+    - name: archive
+      path: "C:\\ferry\\archive"
+  tls:
+    cert_file: "C:\\ferry\\certs\\cert.pem"
+    key_file: "C:\\ferry\\certs\\key.pem"
+
+# Журнал событий. По умолчанию путь — data_dir/alerts.log, уровень info.
+monitoring:
+  delivery_timeout: 15m
+  alerts_log:
+    path: "C:\\ferry\\data\\alerts.log"
+    min_level: info
+    max_size_mb: 10
+    max_backups: 5
+    max_age_days: 14
+
+peers:
+  # WSL слушает 7421. С Windows к нему ходят через 127.0.0.1.
+  # token_file: "C:\\ferry\\secrets\\wsl.token"
+  - id: wsl
+    url: "https://127.0.0.1:7421"
+    token: "change-me-to-a-long-random-token"
+    tls_skip_verify: true

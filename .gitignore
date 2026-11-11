@@ -1,0 +1,12 @@
+bin/
+dist/
+*.exe
+*.pem
+*.ferrypart
+*.ferrytmp
+*.ferrymeta
+data/
+ferry.yaml
+cover.out
+*.log
+.DS_Store
