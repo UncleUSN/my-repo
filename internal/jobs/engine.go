@@ -69,10 +69,11 @@ type Engine struct {
 	// hook перехватывает отправку в тестах. Третий результат true — вызов обработан.
 	hook func(ctx context.Context, peer, local, remote, alias string) (client.Result, error, bool)
 
-	mu      sync.Mutex
-	running map[string]bool
-	status  map[string]*jobStatus
-	clients map[string]*client.Client
+	mu       sync.Mutex
+	running  map[string]bool
+	status   map[string]*jobStatus
+	clients  map[string]*client.Client
+	peerDown map[string]bool
 }
 
 // New создаёт движок. Start запускает расписание и наблюдение.
@@ -81,15 +82,16 @@ func New(cfg *config.Config, st *store.Store, g *guard.Guard, log *slog.Logger) 
 		log = slog.Default()
 	}
 	e := &Engine{
-		cfg:     cfg,
-		store:   st,
-		guard:   g,
-		log:     log,
-		dataDir: cfg.Node.DataDir,
-		bus:     events.New(),
-		running: map[string]bool{},
-		status:  map[string]*jobStatus{},
-		clients: map[string]*client.Client{},
+		cfg:      cfg,
+		store:    st,
+		guard:    g,
+		log:      log,
+		dataDir:  cfg.Node.DataDir,
+		bus:      events.New(),
+		running:  map[string]bool{},
+		status:   map[string]*jobStatus{},
+		clients:  map[string]*client.Client{},
+		peerDown: map[string]bool{},
 	}
 	if cfg.Node.DataDir != "" {
 		led, err := ledger.Open(filepath.Join(cfg.Node.DataDir, "deliveries.db"))
@@ -192,9 +194,11 @@ func (e *Engine) Reload() error {
 	}
 	fresh, err := config.Load(cfg.Path)
 	if err != nil {
+		e.publish(events.Event{Type: events.ConfigInvalid, Error: err.Error()})
 		return err
 	}
 	if err := fresh.PrepareRuntime(); err != nil {
+		e.publish(events.Event{Type: events.ConfigInvalid, Error: err.Error()})
 		return err
 	}
 	e.stopWorkers()
@@ -203,7 +207,12 @@ func (e *Engine) Reload() error {
 	e.clients = map[string]*client.Client{}
 	e.mu.Unlock()
 	e.log.Info("сценарии перечитаны", "scenarios", len(fresh.EffectiveScenarios()), "file", fresh.ScenariosFile)
-	return e.startWorkers()
+	if err := e.startWorkers(); err != nil {
+		e.publish(events.Event{Type: events.ScenariosReloadFailed, Error: err.Error()})
+		return err
+	}
+	e.publish(events.Event{Type: events.ScenariosReloaded, File: fresh.ScenariosFile})
+	return nil
 }
 
 // Jobs возвращает снимок сценариев для API. Старые jobs уже превращены в сценарии.

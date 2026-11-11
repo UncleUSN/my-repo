@@ -298,6 +298,7 @@ ferry transfers --config ferry.yaml [--limit 20]
 ferry status --config ferry.yaml
 ferry config validate --config ferry.yaml [--scenarios файл]
 ferry scenarios reload --config ferry.yaml
+ferry alerts tail --config ferry.yaml [--level error] [--follow]
 ferry cert --dir <каталог> [--host имя]... [--ip адрес]...
 ferry service install|uninstall|start|stop|restart --config ferry.yaml
 ferry version
@@ -384,6 +385,46 @@ scenarios:
 Ручной запуск: `ferry jobs run --config ferry.yaml имя` или `POST /api/v1/jobs/имя/run`. Сводка: `ferry status`.
 
 События доставки (`queued`, `started`, `delivered`, `failed`, `retried`: файл, размер, хеш, сценарий, назначение, попытка, длительность) публикуются во внутреннюю шину. Эндпоинт Prometheus к ней ещё не подключён — это следующий шаг. Читать текущее состояние можно уже сейчас: `GET /api/v1/deliveries`.
+
+## Мониторинг
+
+Все события пишутся в `alerts.log` (JSON, одна строка — одно событие). Путь по умолчанию — `data_dir/alerts.log`. Передача файла не ждёт диск: если буфер полон, строка пропускается и в журнал попадает `alerts_dropped`.
+
+```yaml
+monitoring:
+  delivery_timeout: 15m          # сколько ждать пару «файл, назначение», прежде чем писать delivery_overdue
+  alerts_log:
+    path: "C:\\ferry\\data\\alerts.log"
+    min_level: info              # info | warn | error
+    max_size_mb: 10              # после этого файл становится alerts.log.1
+    max_backups: 5
+    max_age_days: 14
+```
+
+Уровни: обычные события (`queued`, `started`, `delivered`, старт и остановка службы, успешная перечитка сценариев) — `info`. Повтор и просрочка (`retried`, `delivery_overdue`, сосед недоступен) — `warn`. Исчерпание попыток (`delivery_failed`), ошибка конфига и ошибка обхода каталога — `error`.
+
+Пример строк:
+
+```json
+{"timestamp":"2026-11-11T22:15:01.120+03:00","level":"info","event":"delivered","node":"win","scenario":"watch-to-wsl","source":"C:\\ferry\\outbox\\auto.txt","destination":"wsl:inbox/auto.txt","peer":"wsl","size":11,"sha256":"ab12","attempt":1,"duration_ms":18}
+{"timestamp":"2026-11-11T22:15:04.200+03:00","level":"warn","event":"retried","node":"win","scenario":"watch-to-wsl","source":"C:\\ferry\\outbox\\auto.txt","destination":"wsl:archive/auto.txt","peer":"wsl","attempt":2,"duration_ms":5,"error":"connection refused"}
+{"timestamp":"2026-11-11T22:30:01.000+03:00","level":"warn","event":"delivery_overdue","node":"win","scenario":"watch-to-wsl","source":"C:\\ferry\\outbox\\auto.txt","destination":"wsl:archive/auto.txt","peer":"wsl","error":"delivery is still not finished"}
+{"timestamp":"2026-11-11T22:31:10.000+03:00","level":"error","event":"delivery_failed","node":"win","scenario":"watch-to-wsl","source":"C:\\ferry\\outbox\\auto.txt","destination":"wsl:archive/auto.txt","peer":"wsl","attempt":5,"error":"connection refused"}
+```
+
+Смотреть файл:
+
+```powershell
+Get-Content -Wait C:\ferry\data\alerts.log
+C:\ferry\ferry.exe alerts tail --config C:\ferry\ferry.yaml --level error --follow
+```
+
+```bash
+tail -f ~/ferry/data/alerts.log
+~/ferry/ferry alerts tail --config ~/ferry/ferry.yaml --level warn --follow
+```
+
+Шина событий уже отделена от журнала. Позже к ней можно подключить Prometheus (`/metrics`) и внешние уведомления: для этого в коде есть интерфейсы `Metrics` и `Alerter`, реализации пока нет.
 
 ## HTTP API
 

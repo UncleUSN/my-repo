@@ -5,6 +5,7 @@ package events
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,13 +15,29 @@ const (
 	Delivered = "delivered"
 	Failed    = "failed"
 	Retried   = "retried"
+
+	// DeliveryFailed — попытки для пары «файл, назначение» закончились.
+	DeliveryFailed = "delivery_failed"
+	// DeliveryOverdue — доставка не завершилась за отведённый срок.
+	DeliveryOverdue = "delivery_overdue"
+
+	ServiceStarted        = "service_started"
+	ServiceStopped        = "service_stopped"
+	ScenariosReloaded     = "scenarios_reloaded"
+	ScenariosReloadFailed = "scenarios_reload_failed"
+	ConfigInvalid         = "config_invalid"
+	PeerUnreachable       = "peer_unreachable"
+	PeerRecovered         = "peer_recovered"
+	WatcherError          = "watcher_error"
+	AlertsDropped         = "alerts_dropped"
 )
 
-// Event — одно изменение состояния доставки.
-// Поля стабильны: их будет забирать и API статуса, и будущие метрики.
+// Event — одно изменение состояния доставки или узла.
+// Поля стабильны: их забирают файл alerts.log и, позже, метрики.
 type Event struct {
 	Type        string        `json:"type"`
 	Time        time.Time     `json:"time"`
+	Node        string        `json:"node,omitempty"`
 	Scenario    string        `json:"scenario,omitempty"`
 	File        string        `json:"file,omitempty"`
 	Size        int64         `json:"size,omitempty"`
@@ -32,10 +49,16 @@ type Event struct {
 	Error       string        `json:"error,omitempty"`
 }
 
+type subscriber struct {
+	ch      chan Event
+	dropped atomic.Uint64
+}
+
 // Bus рассылает события подписчикам и помнит последние записи.
+// Если буфер подписчика полон, событие пропускается и растёт счётчик Dropped.
 type Bus struct {
 	mu    sync.Mutex
-	subs  []chan Event
+	subs  []*subscriber
 	ring  []Event
 	limit int
 }
@@ -59,35 +82,69 @@ func (b *Bus) Publish(ev Event) {
 	if len(b.ring) > b.limit {
 		b.ring = b.ring[len(b.ring)-b.limit:]
 	}
-	for _, ch := range b.subs {
+	for _, sub := range b.subs {
 		select {
-		case ch <- ev:
+		case sub.ch <- ev:
 		default:
+			sub.dropped.Add(1)
 		}
 	}
 }
 
-// Subscribe возвращает канал и функцию отписки.
-func (b *Bus) Subscribe(buf int) (<-chan Event, func()) {
+// Subscription — подписка на шину. События не ждут медленного читателя.
+type Subscription struct {
+	Events <-chan Event
+	sub    *subscriber
+	bus    *Bus
+	once   sync.Once
+}
+
+// Dropped — сколько событий пропущено, потому что буфер был полон.
+func (s *Subscription) Dropped() uint64 {
+	if s == nil || s.sub == nil {
+		return 0
+	}
+	return s.sub.dropped.Load()
+}
+
+// Cancel отписывается. Повторный вызов ничего не делает.
+func (s *Subscription) Cancel() {
+	if s == nil {
+		return
+	}
+	s.once.Do(func() {
+		s.bus.remove(s.sub)
+	})
+}
+
+// Subscribe подписывается на шину. buf — размер буфера; лишние события отбрасываются.
+func (b *Bus) Subscribe(buf int) *Subscription {
+	if b == nil {
+		ch := make(chan Event)
+		close(ch)
+		return &Subscription{Events: ch}
+	}
 	if buf < 1 {
 		buf = 16
 	}
-	ch := make(chan Event, buf)
+	sub := &subscriber{ch: make(chan Event, buf)}
 	b.mu.Lock()
-	b.subs = append(b.subs, ch)
+	b.subs = append(b.subs, sub)
 	b.mu.Unlock()
-	var once sync.Once
-	return ch, func() {
-		once.Do(func() {
-			b.mu.Lock()
-			defer b.mu.Unlock()
-			for i, sub := range b.subs {
-				if sub == ch {
-					b.subs = append(b.subs[:i], b.subs[i+1:]...)
-					break
-				}
-			}
-		})
+	return &Subscription{Events: sub.ch, sub: sub, bus: b}
+}
+
+func (b *Bus) remove(sub *subscriber) {
+	if b == nil || sub == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, item := range b.subs {
+		if item == sub {
+			b.subs = append(b.subs[:i], b.subs[i+1:]...)
+			return
+		}
 	}
 }
 

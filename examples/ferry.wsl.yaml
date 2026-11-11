@@ -18,6 +18,15 @@ node:
     cert_file: "/home/USER/ferry/certs/cert.pem"
     key_file: "/home/USER/ferry/certs/key.pem"
 
+monitoring:
+  delivery_timeout: 15m
+  alerts_log:
+    path: "/home/USER/ferry/data/alerts.log"
+    min_level: info
+    max_size_mb: 10
+    max_backups: 5
+    max_age_days: 14
+
 peers:
   - id: win
     url: "https://${WIN_HOST}:7420"

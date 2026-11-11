@@ -52,7 +52,8 @@ type Config struct {
 	Jobs  []Job  `yaml:"jobs"`
 	// Scenarios — загруженные сценарии (из этого файла и/или внешнего).
 	// В самом YAML узла их тоже можно описать, но для новой схемы лучше отдельный файл.
-	Scenarios []Scenario `yaml:"scenarios"`
+	Scenarios  []Scenario `yaml:"scenarios"`
+	Monitoring Monitoring `yaml:"monitoring"`
 
 	// Path — абсолютный путь файла, из которого прочитали конфиг.
 	Path string `yaml:"-"`
@@ -76,6 +77,22 @@ type Node struct {
 	Inbound []Inbound `yaml:"inbound"`
 	// Scenarios — файл или каталог scenarios.d. Пусто — только jobs/scenarios из этого файла.
 	Scenarios string `yaml:"scenarios"`
+}
+
+// Monitoring — журнал событий. Метрики и внешние уведомления подключаются сюда позже.
+type Monitoring struct {
+	// DeliveryTimeout — через сколько пара «файл, назначение» считается зависшей.
+	DeliveryTimeout Duration  `yaml:"delivery_timeout"`
+	AlertsLog       AlertsLog `yaml:"alerts_log"`
+}
+
+// AlertsLog — файл JSON Lines. Пустой path означает data_dir/alerts.log.
+type AlertsLog struct {
+	Path       string `yaml:"path"`
+	MinLevel   string `yaml:"min_level"`
+	MaxSizeMB  int    `yaml:"max_size_mb"`
+	MaxBackups int    `yaml:"max_backups"`
+	MaxAgeDays int    `yaml:"max_age_days"`
 }
 
 // TLS — файлы сертификата сервера.
@@ -183,6 +200,8 @@ func (c *Config) expandEnv() {
 	c.Node.TLS.CertFile = os.ExpandEnv(c.Node.TLS.CertFile)
 	c.Node.TLS.KeyFile = os.ExpandEnv(c.Node.TLS.KeyFile)
 	c.Node.Scenarios = os.ExpandEnv(c.Node.Scenarios)
+	c.Monitoring.AlertsLog.Path = os.ExpandEnv(c.Monitoring.AlertsLog.Path)
+	c.Monitoring.AlertsLog.MinLevel = os.ExpandEnv(c.Monitoring.AlertsLog.MinLevel)
 	for i, root := range c.Node.AllowedRoots {
 		c.Node.AllowedRoots[i] = os.ExpandEnv(root)
 	}
@@ -221,6 +240,21 @@ func (c *Config) applyDefaults() {
 	if c.Node.LogLevel == "" {
 		c.Node.LogLevel = "info"
 	}
+	if c.Monitoring.AlertsLog.MinLevel == "" {
+		c.Monitoring.AlertsLog.MinLevel = "info"
+	}
+	if c.Monitoring.AlertsLog.MaxSizeMB == 0 {
+		c.Monitoring.AlertsLog.MaxSizeMB = 10
+	}
+	if c.Monitoring.AlertsLog.MaxBackups == 0 {
+		c.Monitoring.AlertsLog.MaxBackups = 5
+	}
+	if c.Monitoring.AlertsLog.MaxAgeDays == 0 {
+		c.Monitoring.AlertsLog.MaxAgeDays = 14
+	}
+	if c.Monitoring.DeliveryTimeout.Duration == 0 {
+		c.Monitoring.DeliveryTimeout.Duration = 15 * time.Minute
+	}
 	for i := range c.Jobs {
 		j := &c.Jobs[i]
 		if j.Pattern == "" {
@@ -249,6 +283,7 @@ func (c *Config) resolveRelative() {
 		c.Node.AllowedRoots[i] = c.resolve(root)
 	}
 	c.Node.Scenarios = c.resolve(c.Node.Scenarios)
+	c.Monitoring.AlertsLog.Path = c.resolve(c.Monitoring.AlertsLog.Path)
 	for i := range c.Node.Inbound {
 		c.Node.Inbound[i].Path = c.resolve(c.Node.Inbound[i].Path)
 	}
@@ -403,6 +438,11 @@ func (c *Config) PrepareRuntime() error {
 	}
 	if err := os.MkdirAll(c.Node.DataDir, 0o755); err != nil {
 		return fmt.Errorf("data_dir: %w", err)
+	}
+	if c.Monitoring.AlertsLog.Path == "" {
+		c.Monitoring.AlertsLog.Path = filepath.Join(c.Node.DataDir, "alerts.log")
+	} else if c.Monitoring.AlertsLog.Path, err = localAbs(c.Monitoring.AlertsLog.Path); err != nil {
+		return fmt.Errorf("monitoring.alerts_log.path: %w", err)
 	}
 	for i, root := range c.Node.AllowedRoots {
 		abs, err := localAbs(root)

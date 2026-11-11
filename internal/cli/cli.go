@@ -3,19 +3,24 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/UncleUSN/my-repo/internal/cert"
 	"github.com/UncleUSN/my-repo/internal/client"
 	"github.com/UncleUSN/my-repo/internal/config"
+	"github.com/UncleUSN/my-repo/internal/monitoring"
 )
 
 const helpText = `ferry — передача файлов между Windows и Linux.
@@ -32,6 +37,7 @@ const helpText = `ferry — передача файлов между Windows и 
   ferry status --config ferry.yaml
   ferry config validate --config ferry.yaml [--scenarios файл-или-каталог]
   ferry scenarios reload --config ferry.yaml
+  ferry alerts tail [--config ferry.yaml] [--level error] [--follow]
   ferry cert --dir <каталог> [--host имя]... [--ip адрес]...
   ferry service install|uninstall|start|stop|restart --config ferry.yaml
   ferry version
@@ -75,6 +81,8 @@ func Main(version string, args []string) int {
 		return cmdConfig(args[1:])
 	case "scenarios":
 		return cmdScenarios(args[1:])
+	case "alerts":
+		return cmdAlerts(args[1:])
 	case "transfers":
 		return cmdTransfers(args[1:])
 	case "cert":
@@ -490,6 +498,87 @@ func cmdTransfers(args []string) int {
 	}
 	_ = tw.Flush()
 	return 0
+}
+
+func cmdAlerts(args []string) int {
+	if len(args) == 0 || args[0] != "tail" {
+		fmt.Fprintln(os.Stderr, "использование: ferry alerts tail --config <файл> [--level info|warn|error] [--follow]")
+		return 2
+	}
+	fs := newFlagSet("alerts tail")
+	cfgPath := fs.String("config", defaultConfig(), "путь к YAML-конфигу")
+	level := fs.String("level", "info", "минимальный уровень: info, warn или error")
+	follow := fs.Bool("follow", false, "ждать новые строки")
+	file := fs.String("file", "", "явный путь к alerts.log")
+	if code := parse(fs, args[1:]); code >= 0 {
+		return code
+	}
+	path := *file
+	if path == "" {
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			return fail(err)
+		}
+		if cfg.Monitoring.AlertsLog.Path != "" {
+			path = cfg.Monitoring.AlertsLog.Path
+		} else {
+			path = filepath.Join(cfg.Node.DataDir, "alerts.log")
+		}
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	return tailAlerts(ctx, path, *level, *follow)
+}
+
+func tailAlerts(ctx context.Context, path, min string, follow bool) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return fail(err)
+	}
+	defer func() { _ = f.Close() }()
+	printAlerts(f, min)
+	if !follow {
+		return 0
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return 0
+		case <-time.After(200 * time.Millisecond):
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		pos, _ := f.Seek(0, io.SeekCurrent)
+		if st.Size() < pos {
+			_ = f.Close()
+			f, err = os.Open(path)
+			if err != nil {
+				return fail(err)
+			}
+		}
+		if st.Size() == pos {
+			continue
+		}
+		printAlerts(f, min)
+	}
+}
+
+func printAlerts(r io.Reader, min string) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		var row monitoring.Line
+		if json.Unmarshal(line, &row) != nil {
+			continue
+		}
+		if !monitoring.Allows(min, row.Level) {
+			continue
+		}
+		fmt.Println(string(line))
+	}
 }
 
 func cmdCert(args []string) int {

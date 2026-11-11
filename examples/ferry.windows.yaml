@@ -19,6 +19,16 @@ node:
     cert_file: "C:\\ferry\\certs\\cert.pem"
     key_file: "C:\\ferry\\certs\\key.pem"
 
+# Журнал событий. По умолчанию путь — data_dir/alerts.log, уровень info.
+monitoring:
+  delivery_timeout: 15m
+  alerts_log:
+    path: "C:\\ferry\\data\\alerts.log"
+    min_level: info
+    max_size_mb: 10
+    max_backups: 5
+    max_age_days: 14
+
 peers:
   # WSL слушает 7421. С Windows к нему ходят через 127.0.0.1.
   # token_file: "C:\\ferry\\secrets\\wsl.token"

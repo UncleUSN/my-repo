@@ -114,6 +114,7 @@ func (e *Engine) pollWatch(name string, state *watchState) {
 	files, err := e.gather(sc)
 	if err != nil {
 		e.log.Warn("обход сценария", "scenario", name, "err", err)
+		e.publish(events.Event{Type: events.WatcherError, Scenario: name, Error: err.Error()})
 		e.finishStatus(name, "error", err.Error())
 		return
 	}
@@ -312,6 +313,12 @@ func (e *Engine) deliverOne(ctx context.Context, sc config.Scenario, dest config
 			attempts = prev.Attempts + 1
 		}
 	}
+	if attempts == 1 {
+		e.publish(events.Event{
+			Type: events.Queued, Scenario: sc.Name, File: f.Abs, Size: size, SHA256: sum,
+			Peer: dest.Peer, Destination: describeDest(dest, remote),
+		})
+	}
 	e.publish(events.Event{
 		Type: events.Started, Scenario: sc.Name, File: f.Abs, Size: size, SHA256: sum,
 		Peer: dest.Peer, Destination: describeDest(dest, remote), Attempt: attempts,
@@ -334,6 +341,12 @@ func (e *Engine) deliverOne(ctx context.Context, sc config.Scenario, dest config
 				Peer: dest.Peer, Destination: describeDest(dest, remote), Attempt: attempts,
 				Duration: dur, Error: sendErr.Error(),
 			})
+			e.publish(events.Event{
+				Type: events.DeliveryFailed, Scenario: sc.Name, File: f.Abs, Size: size, SHA256: sum,
+				Peer: dest.Peer, Destination: describeDest(dest, remote), Attempt: attempts,
+				Duration: dur, Error: sendErr.Error(),
+			})
+			e.notePeer(dest.Peer, sendErr)
 			e.noteTransfer(sc, dest, f, remote, sum, size, "error", sendErr.Error())
 			return destOutcome{err: sendErr.Error()}
 		}
@@ -345,6 +358,7 @@ func (e *Engine) deliverOne(ctx context.Context, sc config.Scenario, dest config
 			Peer: dest.Peer, Destination: describeDest(dest, remote), Attempt: attempts,
 			Duration: dur, Error: sendErr.Error(),
 		})
+		e.notePeer(dest.Peer, sendErr)
 		return destOutcome{pending: true, err: sendErr.Error()}
 	}
 	if res.SHA256 != "" {
@@ -360,6 +374,7 @@ func (e *Engine) deliverOne(ctx context.Context, sc config.Scenario, dest config
 		Type: events.Delivered, Scenario: sc.Name, File: f.Abs, Size: rec.Size, SHA256: rec.SHA256,
 		Peer: dest.Peer, Destination: describeDest(dest, remote), Attempt: attempts, Duration: dur,
 	})
+	e.notePeer(dest.Peer, nil)
 	e.noteTransfer(sc, dest, f, remote, rec.SHA256, rec.Size, "success", "")
 	return destOutcome{ok: true}
 }
@@ -491,6 +506,36 @@ func summarize(name string, outs []destOutcome) error {
 		msg = "delivery incomplete"
 	}
 	return fmt.Errorf("scenario %s: %s", name, msg)
+}
+
+// notePeer один раз сообщает, что сосед перестал принимать файлы, и один раз — что снова доступен.
+func (e *Engine) notePeer(peer string, err error) {
+	if peer == "" {
+		return
+	}
+	e.mu.Lock()
+	if e.cfg != nil && e.cfg.IsLocal(peer) {
+		e.mu.Unlock()
+		return
+	}
+	down := e.peerDown[peer]
+	if err != nil {
+		if down {
+			e.mu.Unlock()
+			return
+		}
+		e.peerDown[peer] = true
+		e.mu.Unlock()
+		e.publish(events.Event{Type: events.PeerUnreachable, Peer: peer, Error: err.Error()})
+		return
+	}
+	if !down {
+		e.mu.Unlock()
+		return
+	}
+	e.peerDown[peer] = false
+	e.mu.Unlock()
+	e.publish(events.Event{Type: events.PeerRecovered, Peer: peer})
 }
 
 func (e *Engine) publish(ev events.Event) {

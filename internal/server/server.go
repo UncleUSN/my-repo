@@ -20,8 +20,10 @@ import (
 	"time"
 
 	"github.com/UncleUSN/my-repo/internal/config"
+	"github.com/UncleUSN/my-repo/internal/events"
 	"github.com/UncleUSN/my-repo/internal/guard"
 	"github.com/UncleUSN/my-repo/internal/jobs"
+	"github.com/UncleUSN/my-repo/internal/monitoring"
 	"github.com/UncleUSN/my-repo/internal/store"
 )
 
@@ -30,6 +32,7 @@ type Agent struct {
 	URL     string
 	srv     *http.Server
 	engine  *jobs.Engine
+	mon     *monitoring.Monitor
 	cancel  context.CancelFunc
 	once    sync.Once
 	served  chan struct{}
@@ -46,6 +49,12 @@ func (a *Agent) Close() error {
 		return nil
 	}
 	a.once.Do(func() {
+		if a.engine != nil && a.engine.Bus() != nil {
+			a.engine.Bus().Publish(events.Event{Type: events.ServiceStopped, Time: time.Now()})
+		}
+		if a.mon != nil {
+			_ = a.mon.Close()
+		}
 		if a.cancel != nil {
 			a.cancel()
 		}
@@ -74,6 +83,7 @@ func (a *Agent) Close() error {
 // Отмена ctx останавливает агент.
 func Start(parent context.Context, cfg *config.Config, log *slog.Logger, version string) (*Agent, error) {
 	if err := cfg.PrepareRuntime(); err != nil {
+		_ = monitoring.WriteOne(cfg, events.Event{Type: events.ConfigInvalid, Error: err.Error(), Time: time.Now()})
 		return nil, err
 	}
 	var logFile *os.File
@@ -95,16 +105,27 @@ func Start(parent context.Context, cfg *config.Config, log *slog.Logger, version
 		return nil, err
 	}
 	eng := jobs.New(cfg, st, g, log)
+	mon, err := monitoring.Start(cfg, eng.Bus())
+	if err != nil {
+		return nil, err
+	}
+	if eng.Bus() != nil {
+		eng.Bus().Publish(events.Event{Type: events.ServiceStarted, Time: time.Now()})
+	}
 	s := &httpServer{
 		cfg: cfg, log: log, store: st, guard: g, engine: eng, uploads: up, version: version,
 	}
 
 	cert, err := tls.LoadX509KeyPair(cfg.Node.TLS.CertFile, cfg.Node.TLS.KeyFile)
 	if err != nil {
+		_ = mon.Close()
+		eng.Stop()
 		return nil, fmt.Errorf("tls: %w", err)
 	}
 	ln, err := net.Listen("tcp", cfg.Node.Listen)
 	if err != nil {
+		_ = mon.Close()
+		eng.Stop()
 		return nil, fmt.Errorf("listen %s: %w", cfg.Node.Listen, err)
 	}
 	tlsLn := tls.NewListener(ln, &tls.Config{
@@ -116,6 +137,7 @@ func Start(parent context.Context, cfg *config.Config, log *slog.Logger, version
 	if err := eng.Start(ctx); err != nil {
 		cancel()
 		_ = ln.Close()
+		_ = mon.Close()
 		eng.Stop()
 		if logFile != nil {
 			_ = logFile.Close()
@@ -135,6 +157,7 @@ func Start(parent context.Context, cfg *config.Config, log *slog.Logger, version
 		URL:     "https://" + publicAddr(ln.Addr().String()),
 		srv:     srv,
 		engine:  eng,
+		mon:     mon,
 		cancel:  cancel,
 		served:  make(chan struct{}),
 		logFile: logFile,
