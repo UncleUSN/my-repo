@@ -79,19 +79,21 @@ make cross
 PowerShell:
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\ferry\certs, C:\ferry\outbox, C:\ferry\inbox, C:\ferry\sent, C:\ferry\manual, C:\ferry\data | Out-Null
+New-Item -ItemType Directory -Force -Path C:\ferry\certs, C:\ferry\outbox, C:\ferry\inbox, C:\ferry\archive, C:\ferry\sent, C:\ferry\manual, C:\ferry\data | Out-Null
 Copy-Item .\dist\ferry-windows-amd64.exe C:\ferry\ferry.exe
 Copy-Item .\examples\start-windows.ps1 C:\ferry\
 Copy-Item .\examples\ferry.windows.yaml C:\ferry\ferry.yaml
+Copy-Item .\examples\scenarios.windows.yaml C:\ferry\scenarios.windows.yaml
 ```
 
 WSL:
 
 ```bash
-mkdir -p ~/ferry/certs ~/ferry/outbox ~/ferry/inbox ~/ferry/sent ~/ferry/manual ~/ferry/data
+mkdir -p ~/ferry/certs ~/ferry/outbox ~/ferry/inbox ~/ferry/archive ~/ferry/sent ~/ferry/manual ~/ferry/data
 cp /mnt/c/src/my-repo/dist/ferry-linux-amd64 ~/ferry/ferry
 cp /mnt/c/src/my-repo/examples/start-wsl.sh ~/ferry/
 cp /mnt/c/src/my-repo/examples/ferry.wsl.yaml ~/ferry/ferry.yaml
+cp /mnt/c/src/my-repo/examples/scenarios.wsl.yaml ~/ferry/scenarios.wsl.yaml
 chmod +x ~/ferry/ferry ~/ferry/start-wsl.sh
 ```
 
@@ -226,7 +228,7 @@ Get-Content C:\ferry\inbox\from-wsl.txt
 
 ### 9. Задание «появился файл»
 
-В `C:\ferry\ferry.yaml` задание `watch-to-wsl` смотрит на `C:\ferry\outbox`. Когда размер файла не меняется `settle` (в примере 2 секунды), агент отправляет его в `/home/USER/ferry/inbox/` и переносит исходник в `C:\ferry\sent`. Опрос, а не inotify: одинаково работает на Windows и в WSL и не подхватывает файл, который ещё дописывается.
+Сценарий `watch-to-wsl` в `C:\ferry\scenarios.windows.yaml` смотрит на `C:\ferry\outbox`. Когда размер файла не меняется `settle` (в примере 2 секунды), агент кладёт копию в две папки WSL — alias `inbox` и alias `archive` — и только после обеих успешных доставок переносит исходник в `C:\ferry\sent`. Опрос, а не inotify: одинаково работает на Windows и в WSL и не подхватывает файл, который ещё дописывается.
 
 Оба `serve` должны быть запущены.
 
@@ -237,7 +239,7 @@ Get-Content C:\ferry\inbox\from-wsl.txt
 Через несколько секунд:
 
 ```bash
-cat ~/ferry/inbox/auto.txt
+cat ~/ferry/inbox/auto.txt ~/ferry/archive/auto.txt
 ```
 
 ```powershell
@@ -293,6 +295,9 @@ ferry ping --config ferry.yaml --peer <узел>
 ferry jobs list --config ferry.yaml
 ferry jobs run --config ferry.yaml <имя>
 ferry transfers --config ferry.yaml [--limit 20]
+ferry status --config ferry.yaml
+ferry config validate --config ferry.yaml [--scenarios файл]
+ferry scenarios reload --config ferry.yaml
 ferry cert --dir <каталог> [--host имя]... [--ip адрес]...
 ferry service install|uninstall|start|stop|restart --config ferry.yaml
 ferry version
@@ -304,62 +309,81 @@ ferry version
 
 ## Конфигурация
 
-Относительные пути считаются от каталога YAML-файла, а не от текущей папки процесса. У службы Windows текущая папка — `System32`, поэтому в конфиге службы всё равно лучше писать абсолютные пути.
+Конфиг узла (`ferry.yaml`) и сценарии (`scenarios.yaml` или каталог `scenarios.d/`) разделены. В узле — кто слушает, соседи, входящие папки. В сценариях — откуда брать файлы и куда их раскладывать. Относительные пути считаются от каталога своего YAML, а не от текущей папки процесса.
 
-Полные примеры: `examples/ferry.windows.yaml` и `examples/ferry.wsl.yaml`.
+Проверка без запуска: `ferry config validate --config ferry.yaml`. Перечитать сценарии у живого агента: `ferry scenarios reload` или `kill -HUP <pid>` (на Windows — только команда или `POST /api/v1/scenarios/reload`). Порт и сертификат при этом не перезапускаются.
+
+Полные примеры: `examples/ferry.windows.yaml`, `examples/scenarios.windows.yaml`, `examples/ferry.wsl.yaml`, `examples/scenarios.wsl.yaml`.
+
+Старый блок `jobs:` в `ferry.yaml` по-прежнему работает: каждое задание становится сценарием с одним источником и одним назначением. Новые сценарии лучше держать отдельно.
 
 ```yaml
+# ferry.yaml — узел и реестр соседей
 node:
-  id: win                      # буквы, цифры, '.', '_', '-'
+  id: win
   listen: "0.0.0.0:7420"
-  token: "${FERRY_TOKEN}"      # секрет этого узла, минимум 8 символов
-  data_dir: "C:\\ferry\\data"  # история, незавершённые загрузки, журнал
-  allowed_roots:               # пустой список разрешает любой путь и пишет предупреждение
+  token: "${FERRY_TOKEN}"
+  data_dir: "C:\\ferry\\data"
+  scenarios: "C:\\ferry\\scenarios.yaml"   # файл или каталог scenarios.d
+  allowed_roots:
     - "C:\\ferry"
+  inbound:                                  # отправители целятся в alias, не в сырой путь
+    - name: inbox
+      path: "C:\\ferry\\inbox"
+    - name: archive
+      path: "C:\\ferry\\archive"
   tls:
     cert_file: "C:\\ferry\\certs\\cert.pem"
     key_file: "C:\\ferry\\certs\\key.pem"
 
 peers:
   - id: wsl
-    url: "https://127.0.0.1:7421"   # только https
-    token: "${FERRY_TOKEN}"         # секрет того узла
+    url: "https://127.0.0.1:7421"
+    token_file: "C:\\ferry\\secrets\\wsl.token"  # либо token: "${WSL_TOKEN}"
     tls_skip_verify: true
-    # ca_file: "C:\\ferry\\certs\\wsl.pem"
 
-jobs:
+# scenarios.yaml — что передавать
+scenarios:
   - name: watch-to-wsl
-    watch: "C:\\ferry\\outbox"      # каталог; source.path при этом указывать нельзя
-    pattern: "*"                    # по умолчанию "*"; без "/" шаблон сравнивается с именем файла
-    recursive: false
-    settle: 2s                      # файл отправляется, когда размер и mtime не менялись столько времени
-    interval: 2s                    # период опроса
-    destination:
-      node: wsl
-      path: "/home/USER/ferry/inbox/"
-    on_success: move                # none | delete | move
+    watch: true                          # опрос sources
+    schedule: "15 2 * * *"               # можно вместе с watch; пять полей или @every
+    settle: 2s
+    interval: 2s
+    sources:
+      - path: "C:\\ferry\\outbox"
+        include: ["*"]                   # по умолчанию *
+        exclude: ["*.tmp"]
+        recursive: false
+      - path: "C:\\ferry\\reports"
+        include: ["*.csv"]
+    destinations:                        # веер: N узлов и/или N папок
+      - peer: wsl
+        alias: inbox                     # папка на получателе
+      - peer: wsl
+        alias: archive
+      - peer: wsl
+        alias: inbox
+        path: reports                    # подкаталог внутри alias
+    on_success: move                     # keep | none | delete | move
+    success_policy: all                  # all — все назначения; any — хотя бы одно, остальные в финальном состоянии
     archive_dir: "C:\\ferry\\sent"
-
-  - name: nightly-reports
-    schedule: "15 2 * * *"          # минута час день месяц день_недели; можно и "@every 1h"
-    source:
-      path: "C:\\ferry\\reports"    # файл или каталог
-    destination:
-      node: wsl
-      path: "/home/USER/ferry/reports/"
-    on_success: none
+    retry:
+      max_attempts: 5
+      initial_backoff: 2s
+      max_backoff: 1m
 ```
 
-Правила пути назначения:
+Правила:
 
-- источник — каталог или задание `watch`: `destination.path` считается каталогом, хвостовой слэш не обязателен, относительный путь сохраняется;
-- источник — один файл: `destination.path` — это полный путь файла; если он заканчивается на `/` или `\`, файл кладётся внутрь под своим именем.
+- `success_policy: all` переносит или удаляет исходник, только когда каждое назначение подтвердило файл. `any` — когда хотя бы одно подтвердило и остальные уже не ждут повтора (доставлены или исчерпали попытки).
+- Повтор каждой пары «файл, назначение» независим. Состояние лежит в `data_dir/deliveries.db` (bbolt): после перезапуска доставленное с тем же SHA-256 не уходит снова, а незавершённое продолжается.
+- Несколько источников в одном сценарии кладут файлы в подкаталоги по имени папки (`outbox/a.txt` и `reports/a.txt`), чтобы имена не затёрли друг друга. Один источник сохраняет прежнее поведение: в назначении оказывается сам относительный путь.
+- Alias проверяется на получателе и всё равно обязан лежать в `allowed_roots`. Абсолютный путь вместе с alias отвергается.
+- Неизвестное поле в YAML — ошибка при загрузке.
 
-Повторная отправка файла с тем же SHA-256 не перезаписывает байты. Расписание из-за этого можно ставить часто: каждый запуск файл читается и хешируется, по сети уходит только если содержимое изменилось.
+Ручной запуск: `ferry jobs run --config ferry.yaml имя` или `POST /api/v1/jobs/имя/run`. Сводка: `ferry status`.
 
-Неизвестное поле в YAML — ошибка сразу при запуске, чтобы опечатка в `token` не превратилась в пустой секрет.
-
-Ручное задание (без `schedule` и без `watch`) запускается так: `ferry jobs run --config ferry.yaml имя` или `POST /api/v1/jobs/имя/run`.
+События доставки (`queued`, `started`, `delivered`, `failed`, `retried`: файл, размер, хеш, сценарий, назначение, попытка, длительность) публикуются во внутреннюю шину. Эндпоинт Prometheus к ней ещё не подключён — это следующий шаг. Читать текущее состояние можно уже сейчас: `GET /api/v1/deliveries`.
 
 ## HTTP API
 
@@ -369,7 +393,9 @@ jobs:
 | --- | --- | --- |
 | GET | `/api/v1/health` | жив ли порт, без токена |
 | GET | `/api/v1/whoami` | проверка токена |
-| POST | `/api/v1/uploads` | начать загрузку (`path`, `size`, `sha256`, `overwrite`) |
+| POST | `/api/v1/uploads` | начать загрузку (`path`, `alias`, `size`, `sha256`, `overwrite`) |
+| GET | `/api/v1/deliveries?scenario=&status=&limit=` | состояние по каждому назначению |
+| POST | `/api/v1/scenarios/reload` | перечитать сценарии без рестарта |
 | PUT | `/api/v1/uploads/{id}` | кусок файла, заголовок `X-Offset` |
 | POST | `/api/v1/uploads/{id}/commit` | сверить хеш и положить файл на место |
 | GET | `/api/v1/uploads/{id}` | текущее смещение |
@@ -456,7 +482,8 @@ peers:
 ## Ограничения этой версии
 
 - Наблюдение за каталогом — опрос с периодом `interval`, не inotify/ReadDirectoryChanges. Смена содержимого без смены размера и mtime может быть не замечена, пока файл не тронут ещё раз.
-- История — JSON-файл, последние 500 записей.
+- История передач — JSON-файл, последние 500 записей. Журнал доставки по назначениям — отдельная база bbolt.
+- Метрики Prometheus ещё не отдаются: есть шина событий и `GET /api/v1/deliveries`.
 - Один токен на узел, без пользователей и ролей.
 - Файлы внутри одного задания отправляются по очереди.
 - Время изменения и права на стороне получателя не сохраняются, файл создаётся с правами `0644`.

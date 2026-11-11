@@ -23,8 +23,9 @@ cleanup() {
 trap cleanup EXIT
 
 TOKEN="demo-token-not-for-production"
-mkdir -p "$TMP/a/manual" "$TMP/a/outbox" "$TMP/a/sent" "$TMP/a/inbox" \
-  "$TMP/b/manual" "$TMP/b/inbox" "$TMP/b/certs" "$TMP/a/certs"
+mkdir -p "$TMP/a/manual" "$TMP/a/outbox" "$TMP/a/sent" "$TMP/a/inbox" "$TMP/a/archive" \
+  "$TMP/b/manual" "$TMP/b/outbox" "$TMP/b/sent" "$TMP/b/inbox" "$TMP/b/archive" \
+  "$TMP/b/certs" "$TMP/a/certs"
 
 "$BIN" cert --dir "$TMP/a/certs" --cn node-a >/dev/null
 "$BIN" cert --dir "$TMP/b/certs" --cn node-b >/dev/null
@@ -35,8 +36,14 @@ node:
   listen: "127.0.0.1:17420"
   token: "${TOKEN}"
   data_dir: "${TMP}/a/data"
+  scenarios: "${TMP}/a/scenarios.yaml"
   allowed_roots:
     - "${TMP}/a"
+  inbound:
+    - name: inbox
+      path: "${TMP}/a/inbox"
+    - name: archive
+      path: "${TMP}/a/archive"
   tls:
     cert_file: "${TMP}/a/certs/cert.pem"
     key_file: "${TMP}/a/certs/key.pem"
@@ -45,17 +52,29 @@ peers:
     url: "https://127.0.0.1:17421"
     token: "${TOKEN}"
     tls_skip_verify: true
-jobs:
-  - name: watch-to-b
-    watch: "${TMP}/a/outbox"
-    pattern: "*"
+EOF
+
+cat >"$TMP/a/scenarios.yaml" <<EOF
+scenarios:
+  - name: fanout-to-b
+    watch: true
     settle: 300ms
     interval: 200ms
-    destination:
-      node: node-b
-      path: "${TMP}/b/inbox/"
+    sources:
+      - path: "${TMP}/a/outbox"
+        include: ["*"]
+    destinations:
+      - peer: node-b
+        alias: inbox
+      - peer: node-b
+        alias: archive
     on_success: move
+    success_policy: all
     archive_dir: "${TMP}/a/sent"
+    retry:
+      max_attempts: 3
+      initial_backoff: 200ms
+      max_backoff: 1s
 EOF
 
 cat >"$TMP/b/ferry.yaml" <<EOF
@@ -64,8 +83,14 @@ node:
   listen: "127.0.0.1:17421"
   token: "${TOKEN}"
   data_dir: "${TMP}/b/data"
+  scenarios: "${TMP}/b/scenarios.yaml"
   allowed_roots:
     - "${TMP}/b"
+  inbound:
+    - name: inbox
+      path: "${TMP}/b/inbox"
+    - name: archive
+      path: "${TMP}/b/archive"
   tls:
     cert_file: "${TMP}/b/certs/cert.pem"
     key_file: "${TMP}/b/certs/key.pem"
@@ -74,6 +99,23 @@ peers:
     url: "https://127.0.0.1:17420"
     token: "${TOKEN}"
     tls_skip_verify: true
+EOF
+
+cat >"$TMP/b/scenarios.yaml" <<EOF
+scenarios:
+  - name: back-to-a
+    watch: true
+    settle: 300ms
+    interval: 200ms
+    sources:
+      - path: "${TMP}/b/outbox"
+        include: ["*"]
+    destinations:
+      - peer: node-a
+        alias: inbox
+    on_success: move
+    success_policy: all
+    archive_dir: "${TMP}/b/sent"
 EOF
 
 "$BIN" serve --config "$TMP/a/ferry.yaml" >"$TMP/a.log" 2>&1 &
@@ -109,8 +151,10 @@ echo "from B" >"$TMP/b/manual/from-b.txt"
   --src "$TMP/b/manual/from-b.txt" --dst "$TMP/a/inbox/from-b.txt"
 
 echo "watched" >"$TMP/a/outbox/auto.txt"
+echo "back" >"$TMP/b/outbox/back.txt"
 for _ in $(seq 1 50); do
-  if [[ -f "$TMP/b/inbox/auto.txt" && -f "$TMP/a/sent/auto.txt" && ! -f "$TMP/a/outbox/auto.txt" ]]; then
+  if [[ -f "$TMP/b/inbox/auto.txt" && -f "$TMP/b/archive/auto.txt" && -f "$TMP/a/sent/auto.txt" && ! -f "$TMP/a/outbox/auto.txt" \
+    && -f "$TMP/a/inbox/back.txt" && -f "$TMP/b/sent/back.txt" ]]; then
     break
   fi
   sleep 0.1
@@ -119,7 +163,9 @@ done
 fail=0
 cmp -s "$TMP/a/manual/from-a.txt" "$TMP/b/inbox/from-a.txt" || { echo "A→B не совпало" >&2; fail=1; }
 cmp -s "$TMP/b/manual/from-b.txt" "$TMP/a/inbox/from-b.txt" || { echo "B→A не совпало" >&2; fail=1; }
-cmp -s <(printf 'watched\n') "$TMP/b/inbox/auto.txt" || { echo "watch не доставил файл" >&2; fail=1; }
+cmp -s <(printf 'watched\n') "$TMP/b/inbox/auto.txt" || { echo "watch не доставил файл в inbox" >&2; fail=1; }
+cmp -s <(printf 'watched\n') "$TMP/b/archive/auto.txt" || { echo "watch не доставил файл в archive" >&2; fail=1; }
+cmp -s <(printf 'back\n') "$TMP/a/inbox/back.txt" || { echo "обратный сценарий не доставил файл" >&2; fail=1; }
 [[ -f "$TMP/a/sent/auto.txt" ]] || { echo "watch не перенёс исходник в sent" >&2; fail=1; }
 
 if [[ "$fail" -ne 0 ]]; then
@@ -130,4 +176,4 @@ if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-echo "demo ok: A→B, B→A, watch"
+echo "demo ok: A→B, B→A, fan-out inbox+archive, back to A"

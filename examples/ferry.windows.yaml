@@ -1,47 +1,28 @@
-# Агент на Windows. Слушает 7420 на всех интерфейсах, чтобы WSL мог к нему подключиться.
-# Токен ниже — заглушка. Сгенерируйте свой и впишите ОДИН И ТОТ ЖЕ в оба конфига.
+# Агент на Windows. Слушает 7420, чтобы WSL мог к нему подключиться.
+# Токен ниже — заглушка. Один и тот же секрет впишите в оба конфига
+# (или вынесите в token_file / ${FERRY_TOKEN}).
 node:
   id: win
   listen: "0.0.0.0:7420"
   token: "change-me-to-a-long-random-token"
   data_dir: "C:\\ferry\\data"
   log_level: info
+  scenarios: "scenarios.windows.yaml"
   allowed_roots:
     - "C:\\ferry"
+  inbound:
+    - name: inbox
+      path: "C:\\ferry\\inbox"
+    - name: archive
+      path: "C:\\ferry\\archive"
   tls:
     cert_file: "C:\\ferry\\certs\\cert.pem"
     key_file: "C:\\ferry\\certs\\key.pem"
 
 peers:
-  # WSL слушает 7421. С Windows к нему ходят через 127.0.0.1 (localhost forwarding).
-  # tls_skip_verify удобен в лаборатории: IP WSL меняется, и сертификат легко не совпасть.
-  # Для постоянной работы скопируйте cert.pem узла WSL и укажите ca_file вместо skip.
+  # WSL слушает 7421. С Windows к нему ходят через 127.0.0.1.
+  # token_file: "C:\\ferry\\secrets\\wsl.token"
   - id: wsl
     url: "https://127.0.0.1:7421"
     token: "change-me-to-a-long-random-token"
     tls_skip_verify: true
-
-jobs:
-  # Кладёте файл в C:\ferry\outbox — через пару секунд он оказывается в WSL
-  # и уезжает в C:\ferry\sent.
-  - name: watch-to-wsl
-    watch: "C:\\ferry\\outbox"
-    pattern: "*"
-    settle: 2s
-    interval: 2s
-    destination:
-      node: wsl
-      path: "/home/USER/ferry/inbox/"
-    on_success: move
-    archive_dir: "C:\\ferry\\sent"
-
-  # Пример расписания. Раскомментируйте и поправьте каталог.
-  # Пять полей: минута час день месяц день_недели. Здесь — каждый день в 02:15.
-  # - name: nightly-reports
-  #   schedule: "15 2 * * *"
-  #   source:
-  #     path: "C:\\ferry\\reports"
-  #   destination:
-  #     node: wsl
-  #     path: "/home/USER/ferry/reports/"
-  #   on_success: none

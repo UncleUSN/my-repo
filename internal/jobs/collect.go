@@ -16,15 +16,19 @@ const maxFiles = 10000
 
 // File — локальный файл, который задание готово отправить.
 type File struct {
-	Abs  string
-	Rel  string
-	Size int64
-	Mod  time.Time
+	Abs     string
+	Rel     string
+	Size    int64
+	Mod     time.Time
+	FromDir bool
 }
 
-// collect обходит источник. Символические ссылки пропускаются:
-// так задание не вытащит файл из-за пределов allowed_roots через ссылку.
-func collect(root, pattern string, recursive bool, archive string) ([]File, bool, error) {
+// collect обходит источник. include — хотя бы один шаблон должен совпасть,
+// exclude отбрасывает. Символические ссылки пропускаются.
+func collect(root string, include, exclude []string, recursive bool, archive string) ([]File, bool, error) {
+	if len(include) == 0 {
+		include = []string{"*"}
+	}
 	info, err := os.Lstat(root)
 	if err != nil {
 		return nil, false, err
@@ -36,7 +40,7 @@ func collect(root, pattern string, recursive bool, archive string) ([]File, bool
 		if isTemp(info.Name()) {
 			return nil, false, nil
 		}
-		ok, err := paths.Match(pattern, info.Name())
+		ok, err := matchFilters(info.Name(), include, exclude)
 		if err != nil {
 			return nil, false, err
 		}
@@ -70,7 +74,7 @@ func collect(root, pattern string, recursive bool, archive string) ([]File, bool
 			return fmt.Errorf("file %s is outside %s", abs, root)
 		}
 		rel = filepath.ToSlash(rel)
-		ok, err := paths.Match(pattern, rel)
+		ok, err := matchFilters(rel, include, exclude)
 		if err != nil {
 			return err
 		}
@@ -81,7 +85,7 @@ func collect(root, pattern string, recursive bool, archive string) ([]File, bool
 		if err != nil {
 			return err
 		}
-		out = append(out, File{Abs: abs, Rel: rel, Size: info.Size(), Mod: info.ModTime()})
+		out = append(out, File{Abs: abs, Rel: rel, Size: info.Size(), Mod: info.ModTime(), FromDir: true})
 		if len(out) > maxFiles {
 			return fmt.Errorf("more than %d files matched in %s", maxFiles, root)
 		}
@@ -126,6 +130,33 @@ func collect(root, pattern string, recursive bool, archive string) ([]File, bool
 		return nil, true, err
 	}
 	return out, true, nil
+}
+
+func matchFilters(rel string, include, exclude []string) (bool, error) {
+	okAny := false
+	for _, pattern := range include {
+		ok, err := paths.Match(pattern, rel)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			okAny = true
+			break
+		}
+	}
+	if !okAny {
+		return false, nil
+	}
+	for _, pattern := range exclude {
+		ok, err := paths.Match(pattern, rel)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func isTemp(name string) bool {

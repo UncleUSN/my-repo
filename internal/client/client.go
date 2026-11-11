@@ -23,6 +23,7 @@ import (
 	"github.com/UncleUSN/my-repo/internal/checksum"
 	"github.com/UncleUSN/my-repo/internal/config"
 	"github.com/UncleUSN/my-repo/internal/fsutil"
+	"github.com/UncleUSN/my-repo/internal/ledger"
 	"github.com/UncleUSN/my-repo/internal/store"
 )
 
@@ -123,12 +124,19 @@ func (c *Client) WhoAmI(ctx context.Context) (string, error) {
 // UploadFile отправляет локальный файл на remotePath.
 // remotePath передаётся как есть: его разбирает узел-получатель.
 func (c *Client) UploadFile(ctx context.Context, localPath, remotePath string) (Result, error) {
+	return c.Upload(ctx, localPath, remotePath, "")
+}
+
+// Upload отправляет файл. alias — имя входящей папки на получателе;
+// тогда remotePath относительный и не должен быть абсолютным.
+func (c *Client) Upload(ctx context.Context, localPath, remotePath, alias string) (Result, error) {
 	sum, size, err := hashFile(ctx, localPath)
 	if err != nil {
 		return Result{}, err
 	}
 	status, err := c.createUpload(ctx, api.CreateUploadRequest{
 		Path:      remotePath,
+		Alias:     alias,
 		Size:      size,
 		SHA256:    sum,
 		Overwrite: true,
@@ -312,6 +320,42 @@ func (c *Client) RunJob(ctx context.Context, name string) (api.RunResponse, erro
 		return api.RunResponse{}, err
 	}
 	return out, nil
+}
+
+// Deliveries — журнал доставки по назначениям.
+func (c *Client) Deliveries(ctx context.Context, scenario, status string, limit int) ([]ledger.Record, error) {
+	q := url.Values{}
+	if scenario != "" {
+		q.Set("scenario", scenario)
+	}
+	if status != "" {
+		q.Set("status", status)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/api/v1/deliveries"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var out struct {
+		Deliveries []ledger.Record `json:"deliveries"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Deliveries, nil
+}
+
+// ReloadScenarios просит агент перечитать YAML сценариев.
+func (c *Client) ReloadScenarios(ctx context.Context) (int, error) {
+	var out struct {
+		Scenarios int `json:"scenarios"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/scenarios/reload", nil, &out); err != nil {
+		return 0, err
+	}
+	return out.Scenarios, nil
 }
 
 // Transfers возвращает историю.

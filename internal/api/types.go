@@ -29,6 +29,7 @@ type WhoAmI struct {
 // CreateUploadRequest начинает или продолжает загрузку.
 type CreateUploadRequest struct {
 	Path      string `json:"path"`
+	Alias     string `json:"alias,omitempty"`
 	Size      int64  `json:"size"`
 	SHA256    string `json:"sha256"`
 	Overwrite bool   `json:"overwrite"`

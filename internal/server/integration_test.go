@@ -294,6 +294,36 @@ func TestScheduleJob(t *testing.T) {
 	}
 }
 
+func TestInboundAliasUpload(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	root := t.TempDir()
+	inbox := filepath.Join(root, "inbox")
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent, _ := startNode(t, ctx, nodeOpts{
+		id: "b", token: longToken, root: root,
+		inbound: []config.Inbound{{Name: "inbox", Path: inbox}},
+	})
+	src := filepath.Join(root, "local.txt")
+	payload := []byte("via-alias")
+	if err := os.WriteFile(src, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cl := mustClient(t, agent.URL, longToken, true, "")
+	if _, err := cl.Upload(ctx, src, "nested/via.txt", "inbox"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(inbox, "nested", "via.txt"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("alias upload: %v %q", err, got)
+	}
+	if _, err := cl.Upload(ctx, src, `C:\ferry\x.txt`, "inbox"); err == nil {
+		t.Fatal("absolute path with alias was accepted")
+	}
+}
+
 func TestListDirectory(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -321,11 +351,13 @@ func TestListDirectory(t *testing.T) {
 const longToken = "test-token-0123456789"
 
 type nodeOpts struct {
-	id    string
-	token string
-	root  string
-	peers []config.Peer
-	jobs  []config.Job
+	id        string
+	token     string
+	root      string
+	peers     []config.Peer
+	jobs      []config.Job
+	inbound   []config.Inbound
+	scenarios []config.Scenario
 }
 
 func startNode(t *testing.T, ctx context.Context, opt nodeOpts) (*server.Agent, string) {
@@ -344,9 +376,11 @@ func startNode(t *testing.T, ctx context.Context, opt nodeOpts) (*server.Agent, 
 			AllowedRoots: []string{opt.root},
 			TLS:          config.TLS{CertFile: res.CertFile, KeyFile: res.KeyFile},
 		},
-		Peers: opt.peers,
-		Jobs:  opt.jobs,
+		Peers:     opt.peers,
+		Jobs:      opt.jobs,
+		Scenarios: opt.scenarios,
 	}
+	cfg.Node.Inbound = opt.inbound
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	agent, err := server.Start(ctx, cfg, log, "test")
 	if err != nil {

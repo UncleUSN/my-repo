@@ -6,8 +6,14 @@ node:
   token: "change-me-to-a-long-random-token"
   data_dir: "/home/USER/ferry/data"
   log_level: info
+  scenarios: "scenarios.wsl.yaml"
   allowed_roots:
     - "/home/USER/ferry"
+  inbound:
+    - name: inbox
+      path: "/home/USER/ferry/inbox"
+    - name: archive
+      path: "/home/USER/ferry/archive"
   tls:
     cert_file: "/home/USER/ferry/certs/cert.pem"
     key_file: "/home/USER/ferry/certs/key.pem"
@@ -17,16 +23,3 @@ peers:
     url: "https://${WIN_HOST}:7420"
     token: "change-me-to-a-long-random-token"
     tls_skip_verify: true
-
-jobs:
-  - name: watch-to-win
-    watch: "/home/USER/ferry/outbox"
-    pattern: "*"
-    settle: 2s
-    interval: 2s
-    destination:
-      node: win
-      # Оба варианта принимает узел Windows: C:\ferry\inbox\ и C:/ferry/inbox/
-      path: "C:/ferry/inbox/"
-    on_success: move
-    archive_dir: "/home/USER/ferry/sent"

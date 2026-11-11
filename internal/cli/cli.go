@@ -29,6 +29,9 @@ const helpText = `ferry — передача файлов между Windows и 
   ferry jobs list --config ferry.yaml
   ferry jobs run --config ferry.yaml <имя>
   ferry transfers --config ferry.yaml
+  ferry status --config ferry.yaml
+  ferry config validate --config ferry.yaml [--scenarios файл-или-каталог]
+  ferry scenarios reload --config ferry.yaml
   ferry cert --dir <каталог> [--host имя]... [--ip адрес]...
   ferry service install|uninstall|start|stop|restart --config ferry.yaml
   ferry version
@@ -66,6 +69,12 @@ func Main(version string, args []string) int {
 		return cmdPing(args[1:])
 	case "jobs":
 		return cmdJobs(args[1:])
+	case "status":
+		return cmdStatus(args[1:])
+	case "config":
+		return cmdConfig(args[1:])
+	case "scenarios":
+		return cmdScenarios(args[1:])
 	case "transfers":
 		return cmdTransfers(args[1:])
 	case "cert":
@@ -338,6 +347,107 @@ func cmdJobs(args []string) int {
 		fmt.Fprintf(os.Stderr, "неизвестная команда jobs %q\n", args[0])
 		return 2
 	}
+}
+
+func cmdStatus(args []string) int {
+	fs := newFlagSet("status")
+	cfgPath := fs.String("config", defaultConfig(), "путь к YAML-конфигу")
+	jsonOut := fs.Bool("json", false, "напечатать JSON")
+	if code := parse(fs, args); code >= 0 {
+		return code
+	}
+	cl, err := localClient(*cfgPath)
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	id, err := cl.WhoAmI(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	jobs, err := cl.Jobs(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	deliveries, err := cl.Deliveries(ctx, "", "", 100)
+	if err != nil {
+		return fail(err)
+	}
+	counts := map[string]int{}
+	for _, d := range deliveries {
+		counts[d.Status]++
+	}
+	if *jsonOut {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"node": id, "scenarios": jobs, "deliveries": counts,
+		})
+		return 0
+	}
+	fmt.Printf("узел %s\nсценариев: %d\n", id, len(jobs))
+	if len(counts) == 0 {
+		fmt.Println("доставок в журнале нет")
+		return 0
+	}
+	for status, n := range counts {
+		fmt.Printf("  %s: %d\n", status, n)
+	}
+	return 0
+}
+
+func cmdConfig(args []string) int {
+	if len(args) == 0 || args[0] != "validate" {
+		fmt.Fprintln(os.Stderr, "использование: ferry config validate --config <файл> [--scenarios <файл>]")
+		return 2
+	}
+	fs := newFlagSet("config validate")
+	cfgPath := fs.String("config", defaultConfig(), "путь к YAML-конфигу узла")
+	scenarios := fs.String("scenarios", "", "файл или каталог сценариев (перекрывает node.scenarios)")
+	if code := parse(fs, args[1:]); code >= 0 {
+		return code
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return fail(err)
+	}
+	if *scenarios != "" {
+		inline := cfg.Scenarios
+		cfg.Scenarios = nil
+		if err := cfg.LoadScenarios(*scenarios); err != nil {
+			return fail(err)
+		}
+		cfg.Scenarios = append(inline, cfg.Scenarios...)
+		if err := cfg.Validate(); err != nil {
+			return fail(err)
+		}
+	}
+	fmt.Printf("конфиг верный: узел %s, узлов-соседей %d, сценариев %d\n",
+		cfg.Node.ID, len(cfg.Peers), len(cfg.EffectiveScenarios()))
+	return 0
+}
+
+func cmdScenarios(args []string) int {
+	if len(args) == 0 || args[0] != "reload" {
+		fmt.Fprintln(os.Stderr, "использование: ferry scenarios reload --config <файл>")
+		return 2
+	}
+	fs := newFlagSet("scenarios reload")
+	cfgPath := fs.String("config", defaultConfig(), "путь к YAML-конфигу")
+	if code := parse(fs, args[1:]); code >= 0 {
+		return code
+	}
+	cl, err := localClient(*cfgPath)
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	n, err := cl.ReloadScenarios(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Printf("сценарии перечитаны: %d\n", n)
+	return 0
 }
 
 func cmdTransfers(args []string) int {

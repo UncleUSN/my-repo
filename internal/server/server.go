@@ -12,9 +12,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/UncleUSN/my-repo/internal/config"
@@ -150,6 +152,23 @@ func Start(parent context.Context, cfg *config.Config, log *slog.Logger, version
 	go func() {
 		<-ctx.Done()
 		_ = agent.Close()
+	}()
+	go func() {
+		// SIGHUP перечитывает сценарии и peers, не останавливая порт.
+		// На Windows этот сигнал не приходит — там есть POST /api/v1/scenarios/reload.
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGHUP)
+		defer signal.Stop(ch)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+				if err := eng.Reload(); err != nil {
+					log.Error("перечитать сценарии", "err", err)
+				}
+			}
+		}
 	}()
 	log.Info("агент запущен", "node", cfg.Node.ID, "listen", cfg.Node.Listen, "version", version)
 	return agent, nil

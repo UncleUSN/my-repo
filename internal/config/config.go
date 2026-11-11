@@ -45,11 +45,19 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// Config — полный файл конфигурации.
+// Config — файл узла. Сценарии могут лежать отдельно (node.scenarios).
 type Config struct {
 	Node  Node   `yaml:"node"`
 	Peers []Peer `yaml:"peers"`
 	Jobs  []Job  `yaml:"jobs"`
+	// Scenarios — загруженные сценарии (из этого файла и/или внешнего).
+	// В самом YAML узла их тоже можно описать, но для новой схемы лучше отдельный файл.
+	Scenarios []Scenario `yaml:"scenarios"`
+
+	// Path — абсолютный путь файла, из которого прочитали конфиг.
+	Path string `yaml:"-"`
+	// ScenariosFile — откуда прочитаны внешние сценарии.
+	ScenariosFile string `yaml:"-"`
 
 	// fileDir — каталог YAML-файла. Не из файла.
 	fileDir string
@@ -64,6 +72,10 @@ type Node struct {
 	AllowedRoots []string `yaml:"allowed_roots"`
 	LogLevel     string   `yaml:"log_level"`
 	TLS          TLS      `yaml:"tls"`
+	// Inbound — именованные папки, в которые другие узлы кладут файлы по alias.
+	Inbound []Inbound `yaml:"inbound"`
+	// Scenarios — файл или каталог scenarios.d. Пусто — только jobs/scenarios из этого файла.
+	Scenarios string `yaml:"scenarios"`
 }
 
 // TLS — файлы сертификата сервера.
@@ -72,11 +84,12 @@ type TLS struct {
 	KeyFile  string `yaml:"key_file"`
 }
 
-// Peer — другой узел, на который можно отправить файл.
+// Peer — другой узел. Токен можно задать строкой, переменной ${NAME} или файлом token_file.
 type Peer struct {
 	ID            string `yaml:"id"`
 	URL           string `yaml:"url"`
 	Token         string `yaml:"token"`
+	TokenFile     string `yaml:"token_file"`
 	CAFile        string `yaml:"ca_file"`
 	TLSSkipVerify bool   `yaml:"tls_skip_verify"`
 }
@@ -134,10 +147,27 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.Path = abs
 	cfg.fileDir = filepath.Dir(abs)
 	cfg.expandEnv()
+	if env := strings.TrimSpace(os.Getenv("FERRY_SCENARIOS")); env != "" {
+		cfg.Node.Scenarios = env
+	}
 	cfg.applyDefaults()
 	cfg.resolveRelative()
+	if err := cfg.readPeerTokens(); err != nil {
+		return nil, err
+	}
+	inline := cfg.Scenarios
+	if cfg.Node.Scenarios != "" {
+		cfg.Scenarios = nil
+		if err := cfg.LoadScenarios(cfg.Node.Scenarios); err != nil {
+			return nil, err
+		}
+	}
+	if len(inline) > 0 {
+		cfg.Scenarios = append(inline, cfg.Scenarios...)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -152,13 +182,19 @@ func (c *Config) expandEnv() {
 	c.Node.LogLevel = os.ExpandEnv(c.Node.LogLevel)
 	c.Node.TLS.CertFile = os.ExpandEnv(c.Node.TLS.CertFile)
 	c.Node.TLS.KeyFile = os.ExpandEnv(c.Node.TLS.KeyFile)
+	c.Node.Scenarios = os.ExpandEnv(c.Node.Scenarios)
 	for i, root := range c.Node.AllowedRoots {
 		c.Node.AllowedRoots[i] = os.ExpandEnv(root)
+	}
+	for i := range c.Node.Inbound {
+		c.Node.Inbound[i].Name = os.ExpandEnv(c.Node.Inbound[i].Name)
+		c.Node.Inbound[i].Path = os.ExpandEnv(c.Node.Inbound[i].Path)
 	}
 	for i := range c.Peers {
 		c.Peers[i].ID = os.ExpandEnv(c.Peers[i].ID)
 		c.Peers[i].URL = os.ExpandEnv(c.Peers[i].URL)
 		c.Peers[i].Token = os.ExpandEnv(c.Peers[i].Token)
+		c.Peers[i].TokenFile = os.ExpandEnv(c.Peers[i].TokenFile)
 		c.Peers[i].CAFile = os.ExpandEnv(c.Peers[i].CAFile)
 	}
 	for i := range c.Jobs {
@@ -200,6 +236,9 @@ func (c *Config) applyDefaults() {
 			j.OnSuccess = "none"
 		}
 	}
+	for i := range c.Scenarios {
+		c.applyScenarioDefaults(&c.Scenarios[i])
+	}
 }
 
 func (c *Config) resolveRelative() {
@@ -209,8 +248,16 @@ func (c *Config) resolveRelative() {
 	for i, root := range c.Node.AllowedRoots {
 		c.Node.AllowedRoots[i] = c.resolve(root)
 	}
+	c.Node.Scenarios = c.resolve(c.Node.Scenarios)
+	for i := range c.Node.Inbound {
+		c.Node.Inbound[i].Path = c.resolve(c.Node.Inbound[i].Path)
+	}
 	for i := range c.Peers {
 		c.Peers[i].CAFile = c.resolve(c.Peers[i].CAFile)
+		c.Peers[i].TokenFile = c.resolve(c.Peers[i].TokenFile)
+	}
+	for i := range c.Scenarios {
+		resolveScenarioPaths(&c.Scenarios[i], c.fileDir, c)
 	}
 	for i := range c.Jobs {
 		j := &c.Jobs[i]
@@ -260,6 +307,9 @@ func (c *Config) Validate() error {
 		}
 		if u.Hostname() == "" {
 			return fmt.Errorf("peer %q: URL %q has an empty host. If the config uses ${WIN_HOST}, export it or run examples/start-wsl.sh", p.ID, p.URL)
+		}
+		if strings.TrimSpace(p.Token) == "" && strings.TrimSpace(p.TokenFile) == "" {
+			return fmt.Errorf("peer %s: token is empty (set token or token_file)", p.ID)
 		}
 		if strings.TrimSpace(p.Token) == "" {
 			return fmt.Errorf("peer %s: token is empty", p.ID)
@@ -324,7 +374,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("job %s: interval and settle must be >= 0", j.Name)
 		}
 	}
-	return nil
+	return c.validateScenarios()
 }
 
 // PrepareRuntime проверяет то, без чего нельзя слушать порт на этой машине.
@@ -381,6 +431,51 @@ func (c *Config) PrepareRuntime() error {
 		if c.IsLocal(j.Destination.Node) {
 			if j.Destination.Path, err = localAbs(j.Destination.Path); err != nil {
 				return fmt.Errorf("job %s destination: %w", j.Name, err)
+			}
+		}
+	}
+	for i := range c.Node.Inbound {
+		abs, err := localAbs(c.Node.Inbound[i].Path)
+		if err != nil {
+			return fmt.Errorf("inbound %s: %w", c.Node.Inbound[i].Name, err)
+		}
+		c.Node.Inbound[i].Path = abs
+		if len(c.Node.AllowedRoots) > 0 {
+			inside := false
+			for _, root := range c.Node.AllowedRoots {
+				ok, err := paths.WithinRoot(abs, root)
+				if err != nil {
+					return err
+				}
+				if ok {
+					inside = true
+					break
+				}
+			}
+			if !inside {
+				return fmt.Errorf("inbound %s: path %s is outside allowed_roots", c.Node.Inbound[i].Name, abs)
+			}
+		}
+	}
+	for i := range c.Scenarios {
+		s := &c.Scenarios[i]
+		for k := range s.Sources {
+			if s.Sources[k].Path, err = localAbs(s.Sources[k].Path); err != nil {
+				return fmt.Errorf("scenario %s source: %w", s.Name, err)
+			}
+		}
+		if s.ArchiveDir != "" {
+			if s.ArchiveDir, err = localAbs(s.ArchiveDir); err != nil {
+				return fmt.Errorf("scenario %s archive_dir: %w", s.Name, err)
+			}
+		}
+		for k := range s.Destinations {
+			d := &s.Destinations[k]
+			if d.Alias != "" || d.Path == "" || !c.IsLocal(d.Peer) {
+				continue
+			}
+			if d.Path, err = localAbs(d.Path); err != nil {
+				return fmt.Errorf("scenario %s destination: %w", s.Name, err)
 			}
 		}
 	}

@@ -18,6 +18,8 @@ import (
 	"github.com/UncleUSN/my-repo/internal/config"
 	"github.com/UncleUSN/my-repo/internal/guard"
 	"github.com/UncleUSN/my-repo/internal/jobs"
+	"github.com/UncleUSN/my-repo/internal/ledger"
+	"github.com/UncleUSN/my-repo/internal/paths"
 	"github.com/UncleUSN/my-repo/internal/store"
 )
 
@@ -47,6 +49,8 @@ func (s *httpServer) routes() http.Handler {
 	protected.HandleFunc("GET /api/v1/fs/download", s.handleDownload)
 	protected.HandleFunc("GET /api/v1/jobs", s.handleJobs)
 	protected.HandleFunc("POST /api/v1/jobs/{name}/run", s.handleJobRun)
+	protected.HandleFunc("GET /api/v1/deliveries", s.handleDeliveries)
+	protected.HandleFunc("POST /api/v1/scenarios/reload", s.handleReload)
 	protected.HandleFunc("GET /api/v1/transfers", s.handleTransfers)
 	protected.HandleFunc("GET /api/v1/transfers/{id}", s.handleTransfer)
 	mux.Handle("/api/", s.auth(protected))
@@ -85,6 +89,15 @@ func (s *httpServer) handleCreateUpload(w http.ResponseWriter, r *http.Request) 
 	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, api.ErrorResponse{Error: "invalid json"})
 		return
+	}
+	if req.Alias != "" {
+		full, err := s.expandAlias(req.Alias, req.Path)
+		if err != nil {
+			writeHandlerError(w, err)
+			return
+		}
+		req.Path = full
+		req.Alias = ""
 	}
 	st, err := s.uploads.Create(req)
 	if err != nil {
@@ -225,6 +238,57 @@ func (s *httpServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 		Status:     "success",
 		StartedAt:  now,
 		FinishedAt: now,
+	})
+}
+
+func (s *httpServer) expandAlias(alias, rel string) (string, error) {
+	in := s.engine.Config().Inbound(alias)
+	if in == nil {
+		return "", &statusError{code: http.StatusNotFound, msg: "unknown alias " + alias}
+	}
+	if strings.TrimSpace(rel) == "" {
+		return "", &statusError{code: http.StatusBadRequest, msg: "path is required with alias"}
+	}
+	if paths.IsAbs(rel) {
+		return "", &statusError{code: http.StatusBadRequest, msg: "absolute path cannot be combined with alias"}
+	}
+	return paths.Join(in.Path, rel)
+}
+
+func (s *httpServer) handleDeliveries(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if q := r.URL.Query().Get("limit"); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 1 {
+			writeJSON(w, http.StatusBadRequest, api.ErrorResponse{Error: "limit must be a positive integer"})
+			return
+		}
+		limit = n
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	list, err := s.engine.Deliveries(r.URL.Query().Get("scenario"), r.URL.Query().Get("status"), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, api.ErrorResponse{Error: err.Error()})
+		return
+	}
+	if list == nil {
+		list = []ledger.Record{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Deliveries []ledger.Record `json:"deliveries"`
+	}{Deliveries: list})
+}
+
+func (s *httpServer) handleReload(w http.ResponseWriter, r *http.Request) {
+	if err := s.engine.Reload(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, api.ErrorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":    "reloaded",
+		"scenarios": len(s.engine.Config().EffectiveScenarios()),
 	})
 }
 
