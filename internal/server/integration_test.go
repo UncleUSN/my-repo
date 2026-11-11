@@ -241,17 +241,20 @@ func TestWatchJobMovesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(inbox, "auto.txt")
+	archived := filepath.Join(archive, "auto.txt")
+	// Файл на получателе появляется раньше, чем отправитель успевает перенести исходник.
 	if err := waitFor(t, 8*time.Second, func() bool {
 		got, err := os.ReadFile(dest)
-		return err == nil && bytes.Equal(got, payload)
+		if err != nil || !bytes.Equal(got, payload) {
+			return false
+		}
+		if _, err := os.Stat(filepath.Join(outbox, "auto.txt")); !os.IsNotExist(err) {
+			return false
+		}
+		_, err = os.Stat(archived)
+		return err == nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(outbox, "auto.txt")); !os.IsNotExist(err) {
-		t.Fatalf("source still in outbox: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(archive, "auto.txt")); err != nil {
-		t.Fatalf("archive: %v", err)
 	}
 }
 
