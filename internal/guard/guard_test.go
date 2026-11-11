@@ -20,9 +20,8 @@ func TestResolveInsideRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(inbox, "a.txt")
-	if got != want {
-		t.Fatalf("got %s want %s", got, want)
+	if !sameResolved(got, filepath.Join(inbox, "a.txt")) {
+		t.Fatalf("got %s", got)
 	}
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
 	if _, err := g.Resolve(outside); err == nil {
@@ -63,7 +62,17 @@ func TestOpenGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != filepath.Join(dir, "a") {
+	if !sameResolved(got, filepath.Join(dir, "a")) {
 		t.Fatalf("got %s", got)
 	}
+}
+
+// sameResolved считает одинаковыми короткий путь Windows (RUNNER~1) и длинный.
+func sameResolved(got, want string) bool {
+	cg, err1 := resolveExisting(got)
+	cw, err2 := resolveExisting(want)
+	if err1 != nil || err2 != nil {
+		return samePath(filepath.Clean(got), filepath.Clean(want))
+	}
+	return samePath(filepath.Clean(cg), filepath.Clean(cw))
 }

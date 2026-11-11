@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/UncleUSN/my-repo/internal/paths"
@@ -33,7 +34,16 @@ func New(roots []string) (*Guard, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, filepath.Clean(abs))
+		abs = filepath.Clean(abs)
+		// На Windows Temp из GitHub Actions — короткое имя RUNNER~1,
+		// а EvalSymlinks раскрывает его в длинное. Храним обе формы:
+		// входящий путь может быть любой из них.
+		out = addUnique(out, abs)
+		canon, err := resolveExisting(abs)
+		if err != nil {
+			return nil, err
+		}
+		out = addUnique(out, filepath.Clean(canon))
 	}
 	return &Guard{roots: out}, nil
 }
@@ -50,17 +60,19 @@ func (g *Guard) Resolve(p string) (string, error) {
 		return "", err
 	}
 	abs = filepath.Clean(abs)
-	if !g.open && !g.within(abs) {
-		return "", fmt.Errorf("path %q is outside allowed_roots", p)
-	}
 	resolved, err := resolveExisting(abs)
 	if err != nil {
 		return "", err
 	}
-	if !g.open && !g.within(resolved) {
+	resolved = filepath.Clean(resolved)
+	if g.open || g.within(resolved) {
+		return resolved, nil
+	}
+	// Лексически путь был внутри корня, а после раскрытия ссылок — нет.
+	if g.within(abs) {
 		return "", fmt.Errorf("path %q escapes allowed_roots through a symlink", p)
 	}
-	return resolved, nil
+	return "", fmt.Errorf("path %q is outside allowed_roots", p)
 }
 
 func (g *Guard) within(p string) bool {
@@ -118,12 +130,36 @@ func (g *Guard) Open() bool {
 	return g == nil || g.open
 }
 
-// Contains — лексическая проверка без обращения к ФС. Удобно, чтобы
-// не подбирать файлы из каталога архива, лежащего внутри зоны наблюдения.
+// Contains сообщает, что candidate лежит внутри root.
+// Сначала сравнение строк, затем — после раскрытия коротких имён Windows и симлинков.
 func Contains(root, candidate string) bool {
 	if strings.TrimSpace(root) == "" {
 		return false
 	}
-	ok, err := paths.WithinRoot(candidate, root)
+	if ok, err := paths.WithinRoot(candidate, root); err == nil && ok {
+		return true
+	}
+	cr, err1 := resolveExisting(root)
+	cc, err2 := resolveExisting(candidate)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	ok, err := paths.WithinRoot(filepath.Clean(cc), filepath.Clean(cr))
 	return err == nil && ok
+}
+
+func addUnique(out []string, p string) []string {
+	for _, existing := range out {
+		if samePath(existing, p) {
+			return out
+		}
+	}
+	return append(out, p)
+}
+
+func samePath(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
