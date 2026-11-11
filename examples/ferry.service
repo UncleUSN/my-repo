@@ -1,0 +1,17 @@
+[Unit]
+Description=Ferry file transfer agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ferry
+Group=ferry
+ExecStart=/usr/local/bin/ferry serve --config /etc/ferry/ferry.yaml
+WorkingDirectory=/var/lib/ferry
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
