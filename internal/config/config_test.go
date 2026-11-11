@@ -38,6 +38,7 @@ func TestLoadExampleWindows(t *testing.T) {
 
 func TestLoadExampleWSLExpandsHost(t *testing.T) {
 	t.Setenv("WIN_HOST", "172.31.0.1")
+	t.Setenv("HOME", "/tmp/ferry-home")
 	cfg, err := Load(filepath.Join(repoRoot(t), "examples", "ferry.wsl.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,15 @@ func TestLoadExampleWSLExpandsHost(t *testing.T) {
 	}
 	if raw != `C:/ferry/archive/` {
 		t.Fatalf("windows dest must stay untouched, got %q", raw)
+	}
+	if cfg.Node.DataDir != "/tmp/ferry-home/ferry/data" {
+		t.Fatalf("data dir %s", cfg.Node.DataDir)
+	}
+	if cfg.Scenarios[0].Sources[0].Path != "/tmp/ferry-home/ferry/outbox" {
+		t.Fatalf("source %s", cfg.Scenarios[0].Sources[0].Path)
+	}
+	if cfg.Node.AllowedRoots[0] != "/tmp/ferry-home/ferry" {
+		t.Fatalf("root %s", cfg.Node.AllowedRoots[0])
 	}
 }
 
@@ -259,6 +269,49 @@ jobs:
 	}
 	if sc[0].Retry.MaxAttempts != 5 {
 		t.Fatal(sc[0].Retry.MaxAttempts)
+	}
+}
+
+func TestTokenTrimAndTilde(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	body := []byte(`
+node:
+  id: wsl
+  listen: "127.0.0.1:1"
+  token: "0123456789abcdef0123456789abcdef\n"
+  data_dir: "~/ferry/data"
+peers:
+  - id: win
+    url: "https://127.0.0.1:2"
+    token: "0123456789abcdef0123456789abcdef  "
+    tls_skip_verify: true
+`)
+	path := filepath.Join(dir, "ferry.yaml")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "0123456789abcdef0123456789abcdef"
+	if cfg.Node.Token != want || cfg.Peers[0].Token != want {
+		t.Fatalf("tokens %q %q", cfg.Node.Token, cfg.Peers[0].Token)
+	}
+	if cfg.Node.Token != cfg.Peers[0].Token {
+		t.Fatal("trimmed tokens differ")
+	}
+	gotHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Node.DataDir != filepath.Join(gotHome, "ferry", "data") && cfg.Node.DataDir != filepath.Join(gotHome, "ferry/data") {
+		t.Fatalf("tilde data dir %s", cfg.Node.DataDir)
 	}
 }
 

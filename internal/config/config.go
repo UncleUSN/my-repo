@@ -5,6 +5,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -194,39 +196,39 @@ func Load(path string) (*Config, error) {
 func (c *Config) expandEnv() {
 	c.Node.ID = os.ExpandEnv(c.Node.ID)
 	c.Node.Listen = os.ExpandEnv(c.Node.Listen)
-	c.Node.Token = os.ExpandEnv(c.Node.Token)
-	c.Node.DataDir = os.ExpandEnv(c.Node.DataDir)
+	c.Node.Token = cleanToken(os.ExpandEnv(c.Node.Token))
+	c.Node.DataDir = expandPath(c.Node.DataDir)
 	c.Node.LogLevel = os.ExpandEnv(c.Node.LogLevel)
-	c.Node.TLS.CertFile = os.ExpandEnv(c.Node.TLS.CertFile)
-	c.Node.TLS.KeyFile = os.ExpandEnv(c.Node.TLS.KeyFile)
-	c.Node.Scenarios = os.ExpandEnv(c.Node.Scenarios)
-	c.Monitoring.AlertsLog.Path = os.ExpandEnv(c.Monitoring.AlertsLog.Path)
+	c.Node.TLS.CertFile = expandPath(c.Node.TLS.CertFile)
+	c.Node.TLS.KeyFile = expandPath(c.Node.TLS.KeyFile)
+	c.Node.Scenarios = expandPath(c.Node.Scenarios)
+	c.Monitoring.AlertsLog.Path = expandPath(c.Monitoring.AlertsLog.Path)
 	c.Monitoring.AlertsLog.MinLevel = os.ExpandEnv(c.Monitoring.AlertsLog.MinLevel)
 	for i, root := range c.Node.AllowedRoots {
-		c.Node.AllowedRoots[i] = os.ExpandEnv(root)
+		c.Node.AllowedRoots[i] = expandPath(root)
 	}
 	for i := range c.Node.Inbound {
 		c.Node.Inbound[i].Name = os.ExpandEnv(c.Node.Inbound[i].Name)
-		c.Node.Inbound[i].Path = os.ExpandEnv(c.Node.Inbound[i].Path)
+		c.Node.Inbound[i].Path = expandPath(c.Node.Inbound[i].Path)
 	}
 	for i := range c.Peers {
 		c.Peers[i].ID = os.ExpandEnv(c.Peers[i].ID)
 		c.Peers[i].URL = os.ExpandEnv(c.Peers[i].URL)
-		c.Peers[i].Token = os.ExpandEnv(c.Peers[i].Token)
-		c.Peers[i].TokenFile = os.ExpandEnv(c.Peers[i].TokenFile)
+		c.Peers[i].Token = cleanToken(os.ExpandEnv(c.Peers[i].Token))
+		c.Peers[i].TokenFile = expandPath(c.Peers[i].TokenFile)
 		c.Peers[i].CAFile = os.ExpandEnv(c.Peers[i].CAFile)
 	}
 	for i := range c.Jobs {
 		j := &c.Jobs[i]
 		j.Name = os.ExpandEnv(j.Name)
 		j.Schedule = os.ExpandEnv(j.Schedule)
-		j.Watch = os.ExpandEnv(j.Watch)
+		j.Watch = expandPath(j.Watch)
 		j.Pattern = os.ExpandEnv(j.Pattern)
-		j.Source.Path = os.ExpandEnv(j.Source.Path)
+		j.Source.Path = expandPath(j.Source.Path)
 		j.Destination.Node = os.ExpandEnv(j.Destination.Node)
-		j.Destination.Path = os.ExpandEnv(j.Destination.Path)
+		j.Destination.Path = expandPath(j.Destination.Path)
 		j.OnSuccess = os.ExpandEnv(j.OnSuccess)
-		j.ArchiveDir = os.ExpandEnv(j.ArchiveDir)
+		j.ArchiveDir = expandPath(j.ArchiveDir)
 	}
 }
 
@@ -520,6 +522,59 @@ func (c *Config) PrepareRuntime() error {
 		}
 	}
 	return c.Validate()
+}
+
+// expandPath раскрывает ${VAR}, $VAR и ~/ в начале пути.
+// Если HOME не задан (служба Windows), ${HOME} берётся из профиля пользователя.
+func expandPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	if os.Getenv("HOME") == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			p = strings.ReplaceAll(p, "${HOME}", home)
+			p = os.Expand(p, func(name string) string {
+				if name == "HOME" {
+					return home
+				}
+				return os.Getenv(name)
+			})
+			return expandTilde(p)
+		}
+	}
+	return expandTilde(os.ExpandEnv(p))
+}
+
+func expandTilde(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, `~\`) {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
+}
+
+// cleanToken убирает пробелы, перевод строки и BOM, из-за которых одинаковые
+// с виду секреты не проходят сравнение.
+func cleanToken(s string) string {
+	s = strings.TrimPrefix(s, "\uFEFF")
+	s = strings.TrimSpace(s)
+	return strings.TrimPrefix(s, "\uFEFF")
+}
+
+// TokenFingerprint — первые 6 символов SHA-256 токена. Сам секрет в журнал не пишется.
+func TokenFingerprint(token string) string {
+	token = cleanToken(token)
+	if token == "" {
+		return "empty"
+	}
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])[:6]
 }
 
 func localAbs(p string) (string, error) {

@@ -193,7 +193,22 @@ func Start(parent context.Context, cfg *config.Config, log *slog.Logger, version
 			}
 		}
 	}()
-	log.Info("агент запущен", "node", cfg.Node.ID, "listen", cfg.Node.Listen, "version", version)
+	log.Info("агент запущен",
+		"node", cfg.Node.ID,
+		"listen", cfg.Node.Listen,
+		"config", cfg.Path,
+		"token_fp", config.TokenFingerprint(cfg.Node.Token),
+		"token_len", len(strings.TrimSpace(cfg.Node.Token)),
+		"version", version,
+	)
+	for _, peer := range cfg.Peers {
+		log.Info("сосед",
+			"peer", peer.ID,
+			"url", peer.URL,
+			"token_fp", config.TokenFingerprint(peer.Token),
+			"token_len", len(strings.TrimSpace(peer.Token)),
+		)
+	}
 	return agent, nil
 }
 
@@ -250,6 +265,10 @@ func warnConfig(log *slog.Logger, cfg *config.Config) {
 }
 
 func tokenOK(got, want string) bool {
+	got = strings.TrimPrefix(strings.TrimSpace(got), "\uFEFF")
+	want = strings.TrimPrefix(strings.TrimSpace(want), "\uFEFF")
+	got = strings.TrimSpace(got)
+	want = strings.TrimSpace(want)
 	if want == "" {
 		return false
 	}

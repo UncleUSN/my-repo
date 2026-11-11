@@ -12,5 +12,10 @@ if [[ -z "${WIN_HOST:-}" ]]; then
   exit 1
 fi
 export WIN_HOST
+if [[ -z "${HOME:-}" ]]; then
+  HOME="$(getent passwd "$(id -un)" 2>/dev/null | awk -F: '{print $6; exit}')"
+  export HOME
+fi
+echo "HOME=${HOME} — в ferry.yaml пути \${HOME} и ~/ раскрываются в этот каталог"
 echo "WIN_HOST=${WIN_HOST} (если ping до Windows не проходит, а в .wslconfig включён mirrored, попробуйте WIN_HOST=127.0.0.1)"
 exec ./ferry serve --config "${1:-./ferry.yaml}"

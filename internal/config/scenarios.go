@@ -242,17 +242,17 @@ func resolveScenarioPaths(s *Scenario, base string, c *Config) {
 	}
 	for i := range s.Destinations {
 		d := &s.Destinations[i]
+		d.Path = expandPath(d.Path)
 		// Чужой путь и alias не приклеиваем к локальному каталогу.
-		if d.Alias != "" {
+		if d.Alias != "" || c == nil || !c.IsLocal(d.Peer) {
 			continue
 		}
-		if c != nil && c.IsLocal(d.Peer) {
-			d.Path = resolveAgainst(base, d.Path)
-		}
+		d.Path = resolveAgainst(base, d.Path)
 	}
 }
 
 func resolveAgainst(base, p string) string {
+	p = expandPath(p)
 	if p == "" || pathsIsAbs(p) {
 		return p
 	}
@@ -375,7 +375,7 @@ func (c *Config) readPeerTokens() error {
 		if err != nil {
 			return fmt.Errorf("peer %s: token_file: %w", p.ID, err)
 		}
-		tok := strings.TrimSpace(string(b))
+		tok := cleanToken(string(b))
 		if tok == "" {
 			return fmt.Errorf("peer %s: token_file %s is empty", p.ID, p.TokenFile)
 		}

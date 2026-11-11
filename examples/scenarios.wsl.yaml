@@ -6,7 +6,7 @@ scenarios:
     settle: 2s
     interval: 2s
     sources:
-      - path: "/home/USER/ferry/outbox"
+      - path: "${HOME}/ferry/outbox"
         include: ["*"]
         exclude: ["*.tmp"]
     destinations:
@@ -16,7 +16,7 @@ scenarios:
         path: "C:/ferry/archive/"
     on_success: move
     success_policy: all
-    archive_dir: "/home/USER/ferry/sent"
+    archive_dir: "${HOME}/ferry/sent"
     retry:
       max_attempts: 5
       initial_backoff: 2s

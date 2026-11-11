@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -71,13 +72,15 @@ func New(p config.Peer) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(p.Token) == "" {
+	token := strings.TrimPrefix(strings.TrimSpace(p.Token), "\uFEFF")
+	token = strings.TrimSpace(token)
+	if token == "" {
 		return nil, fmt.Errorf("peer %s: token is empty", p.ID)
 	}
 	return &Client{
 		HTTP:  &http.Client{Transport: transport},
 		base:  strings.TrimRight(p.URL, "/"),
-		token: p.Token,
+		token: token,
 		peer:  p.ID,
 		chunk: DefaultChunkSize,
 	}, nil
@@ -397,7 +400,7 @@ func (c *Client) putChunk(ctx context.Context, id string, offset int64, chunk []
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, readAPIError(resp)
+		return 0, wrapAuth(readAPIError(resp))
 	}
 	var out api.UploadStatus
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -424,10 +427,10 @@ func (c *Client) fetch(ctx context.Context, remote string, offset int64, w io.Wr
 		return fmt.Errorf("server ignored Range, resume is not possible")
 	}
 	if offset > 0 && resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
-		return readAPIError(resp)
+		return wrapAuth(readAPIError(resp))
 	}
 	if offset == 0 && resp.StatusCode != http.StatusOK {
-		return readAPIError(resp)
+		return wrapAuth(readAPIError(resp))
 	}
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		return err
@@ -458,7 +461,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return readAPIError(resp)
+		return wrapAuth(readAPIError(resp))
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -468,6 +471,14 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body any, out 
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+func wrapAuth(err error) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
+		return fmt.Errorf("%w; токен клиента не совпал с node.token на сервере (пробелы и перевод строки в конце тоже важны; отпечатки token_fp пишутся в журнал при старте и при отказе)", err)
+	}
+	return err
 }
 
 func readAPIError(resp *http.Response) error {

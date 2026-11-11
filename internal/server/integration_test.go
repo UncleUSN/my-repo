@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +48,108 @@ func TestHealthAndAuth(t *testing.T) {
 	ok, err := mustClient(t, agent.URL, longToken, true, "").WhoAmI(ctx)
 	if err != nil || ok != "a" {
 		t.Fatalf("whoami %q %v", ok, err)
+	}
+}
+
+func TestPingInlineTokenBetweenNodes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	const token = "0123456789abcdef0123456789abcdef"
+	bRoot := filepath.Join(dir, "b")
+	aRoot := filepath.Join(dir, "a")
+	for _, d := range []string{bRoot, aRoot} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bCert, err := cert.Generate(cert.Options{Dir: filepath.Join(bRoot, "certs"), CommonName: "wsl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aCert, err := cert.Generate(cert.Options{Dir: filepath.Join(aRoot, "certs"), CommonName: "win"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// В кавычках YAML \n — перевод строки. После загрузки он должен срезаться.
+	bYAML := fmt.Sprintf(`
+node:
+  id: wsl
+  listen: "127.0.0.1:0"
+  token: "%s\n"
+  data_dir: %q
+  allowed_roots: [%q]
+  tls:
+    cert_file: %q
+    key_file: %q
+`, token, filepath.Join(bRoot, "data"), bRoot, bCert.CertFile, bCert.KeyFile)
+	bPath := filepath.Join(bRoot, "ferry.yaml")
+	if err := os.WriteFile(bPath, []byte(bYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bCfg, err := config.Load(bPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bCfg.Node.Token != token {
+		t.Fatalf("wsl token %q", bCfg.Node.Token)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	agentB, err := server.Start(ctx, bCfg, log, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = agentB.Close() })
+
+	aYAML := fmt.Sprintf(`
+node:
+  id: win
+  listen: "127.0.0.1:0"
+  token: "ffffffffffffffffffffffffffffffff"
+  data_dir: %q
+  allowed_roots: [%q]
+  tls:
+    cert_file: %q
+    key_file: %q
+peers:
+  - id: wsl
+    url: %q
+    token: "%s  "
+    tls_skip_verify: true
+`, filepath.Join(aRoot, "data"), aRoot, aCert.CertFile, aCert.KeyFile, agentB.URL, token)
+	aPath := filepath.Join(aRoot, "ferry.yaml")
+	if err := os.WriteFile(aPath, []byte(aYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aCfg, err := config.Load(aPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, ok := aCfg.Peer("wsl")
+	if !ok {
+		t.Fatal("missing peer")
+	}
+	if peer.Token != token {
+		t.Fatalf("peer token %q", peer.Token)
+	}
+	cl, err := client.New(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := cl.WhoAmI(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "wsl" {
+		t.Fatalf("whoami %s", id)
+	}
+	bad, err := client.New(config.Peer{ID: "wsl", URL: agentB.URL, Token: "ffffeeeeffffeeeeffffeeeeffffeeee", TLSSkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = bad.WhoAmI(ctx)
+	if err == nil || !strings.Contains(err.Error(), "node.token") {
+		t.Fatalf("expected token hint, got %v", err)
 	}
 }
 

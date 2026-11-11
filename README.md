@@ -97,7 +97,7 @@ cp /mnt/c/src/my-repo/examples/scenarios.wsl.yaml ~/ferry/scenarios.wsl.yaml
 chmod +x ~/ferry/ferry ~/ferry/start-wsl.sh
 ```
 
-Дальше в обоих `ferry.yaml` замените токен-заглушку `change-me-to-a-long-random-token` на один и тот же длинный секрет и подставьте имя пользователя вместо `USER` в путях WSL (`/home/USER/...` → `/home/ваше_имя/...`).
+Дальше в обоих `ferry.yaml` замените токен-заглушку `change-me-to-a-long-random-token` на один и тот же длинный секрет. В конфиге WSL пути уже записаны как `${HOME}/ferry/...`: агент подставит домашний каталог сам (также понимает `~/`). Не оставляйте литерал `/home/USER`.
 
 Секрет, например:
 
@@ -172,7 +172,7 @@ cd C:\ferry
 C:\ferry\ferry.exe ping --config C:\ferry\ferry.yaml --peer wsl
 ```
 
-Ожидается: `узел wsl отвечает (id=wsl)`.
+Ожидается: `узел wsl отвечает (id=wsl)`. Если ответ `401`, сравните `token_fp` в журнале Windows (`сосед wsl`) и в журнале WSL (`token_fp` при старте): это SHA-256 токена, первые 6 символов. `ping` отправляет `peers.wsl.token`, а WSL проверяет свой `node.token`. После правки конфига процесс нужно перезапустить.
 
 WSL:
 
@@ -198,7 +198,7 @@ New-Item -ItemType Directory -Force -Path C:\ferry\manual | Out-Null
 [System.IO.File]::WriteAllText('C:\ferry\manual\from-windows.txt', "hello from windows`n")
 C:\ferry\ferry.exe send --config C:\ferry\ferry.yaml --peer wsl `
   --src C:\ferry\manual\from-windows.txt `
-  --dst /home/USER/ferry/inbox/from-windows.txt
+  --dst "$HOME/ferry/inbox/from-windows.txt"
 ```
 
 Подставьте свой домашний каталог. В WSL:

@@ -68,7 +68,29 @@ func (s *httpServer) routes() http.Handler {
 
 func (s *httpServer) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !tokenOK(bearer(r), s.cfg.Node.Token) {
+		got := bearer(r)
+		want := ""
+		if s.engine != nil {
+			if cfg := s.engine.Config(); cfg != nil {
+				want = cfg.Node.Token
+			}
+		}
+		if want == "" && s.cfg != nil {
+			want = s.cfg.Node.Token
+		}
+		if !tokenOK(got, want) {
+			reason := "token mismatch"
+			if strings.TrimSpace(got) == "" {
+				reason = "missing header"
+			}
+			s.log.Warn("отказ в доступе",
+				"reason", reason,
+				"remote", r.RemoteAddr,
+				"got_fp", config.TokenFingerprint(got),
+				"want_fp", config.TokenFingerprint(want),
+				"got_len", len(strings.TrimSpace(got)),
+				"want_len", len(strings.TrimSpace(want)),
+			)
 			writeJSON(w, http.StatusUnauthorized, api.ErrorResponse{Error: "unauthorized"})
 			return
 		}
