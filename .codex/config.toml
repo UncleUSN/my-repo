@@ -1,0 +1,15 @@
+# Enable lifecycle hooks (PermissionRequest, PreToolUse, Stop).
+[features]
+hooks = true
+
+# Cover Plan-mode prompts and other "needs you" states even when hooks
+# are not yet trusted. Bel is the terminal bell; Bottle/Glass come from hooks.
+[tui]
+notifications = [
+  "approval-requested",
+  "plan-mode-prompt",
+  "async-question",
+  "agent-turn-complete",
+]
+notification_method = "bel"
+notification_condition = "always"
